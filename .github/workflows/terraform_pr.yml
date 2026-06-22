@@ -1,0 +1,17 @@
+name: Terraform PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  terraform-plan:
+    uses: org/az_tf_workflow/.github/workflows/terraform-infrastructure.yml@v1
+
+    with:
+      environment: dev
+      action: plan
+      working_directory: .
+
+    secrets: inherit
