@@ -1,4 +1,4 @@
-name: Terraform Platform
+name: Application Deployment
 
 on:
   workflow_call:
@@ -7,167 +7,35 @@ on:
         required: true
         type: string
 
-      action:
+      application_name:
         required: true
         type: string
-
-      working_directory:
-        required: false
-        type: string
-        default: "."
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
 
 jobs:
 
-  terraform:
+  deploy:
 
     runs-on: ubuntu-latest
 
     environment: ${{ inputs.environment }}
 
-    defaults:
-      run:
-        working-directory: ${{ inputs.working_directory }}
-
     steps:
 
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      ####################################################
-      # Terraform Version
-      ####################################################
+      - name: Build
+        run: echo "Build Application"
 
-      - name: Read Terraform Version
-        id: tf_version
+      - name: Test
+        run: echo "Run Unit Tests"
+
+      - name: Security Scan
+        run: echo "Run Security Scans"
+
+      - name: Deploy
         run: |
-          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ steps.tf_version.outputs.version }}
-
-      #################################################
-      # Generate Workflow Metadata
-      #################################################
-
-      - name: Generate Workflow Metadata
-        run: |
-
-          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
-
-          MODULE_VERSION="${GITHUB_REF_NAME}"
-
-          cat > workflow.auto.tfvars.json <<EOF
-          {
-            "workflow_tags": {
-              "repository": "${GITHUB_REPOSITORY}",
-              "terraform-module": "${MODULE_NAME}",
-              "terraform-version": "${{ steps.tf_version.outputs.version }}"
-            }
-          }
-          EOF
-
-          echo "Generated workflow.auto.tfvars.json"
-          cat workflow.auto.tfvars.json
-
-
-      ####################################################
-      # Format Check
-      ####################################################
-
-      - name: Terraform Format Check
-        if: inputs.action != 'apply'
-        run: terraform fmt -check -recursive
-
-      ####################################################
-      # Terraform Init
-      ####################################################
-
-      - name: Terraform Init
-        run: |
-          terraform init \
-          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
-
-      ####################################################
-      # Terraform Validate
-      ####################################################
-
-      - name: Terraform Validate
-        if: inputs.action != 'apply'
-        run: terraform validate
-
-      ####################################################
-      # TFLint
-      ####################################################
-
-      - name: Setup TFLint
-        if: inputs.action != 'apply'
-        uses: terraform-linters/setup-tflint@v4
-
-      - name: Init TFLint
-        if: inputs.action != 'apply'
-        run: tflint --init
-
-      - name: Run TFLint
-        if: inputs.action != 'apply'
-        run: tflint --recursive
-
-      ####################################################
-      # Checkov Security Scan
-      ####################################################
-
-      - name: Checkov Scan
-        if: inputs.action != 'apply'
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: ${{ inputs.working_directory }}
-          framework: terraform
-          quiet: true
-          soft_fail: false
-
-      ####################################################
-      # Azure Login
-      ####################################################
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      ####################################################
-      # PLAN
-      ####################################################
-
-      - name: Terraform Plan
-        if: inputs.action == 'plan'
-        run: |
-          terraform plan \
-            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
-            -out=tfplan
-
-      - name: Upload Plan Artifact
-        if: inputs.action == 'plan'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ inputs.environment }}
-          path: ${{ inputs.working_directory }}/tfplan
-
-      ####################################################
-      # APPLY
-      ####################################################
-
-      - name: Terraform Apply
-        if: inputs.action == 'apply'
-        run: |
-          terraform apply \
-            -auto-approve \
-            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
-            
+          echo "Deploying ${{ inputs.application_name }}"
