@@ -71,15 +71,7 @@ jobs:
             "workflow_tags": {
               "repository": "${GITHUB_REPOSITORY}",
               "terraform-module": "${MODULE_NAME}",
-              "terraform-version": "${{ steps.tf_version.outputs.version }}",
-              "module-version": "${MODULE_VERSION}",
-              "environment": "${{ inputs.environment }}",
-              "workflow-name": "${GITHUB_WORKFLOW}",
-              "workflow-run-id": "${GITHUB_RUN_ID}",
-              "workflow-run-number": "${GITHUB_RUN_NUMBER}",
-              "deployed-by": "${GITHUB_ACTOR}",
-              "commit-sha": "${GITHUB_SHA}",
-              "deployment-date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              "terraform-version": "${{ steps.tf_version.outputs.version }}"
             }
           }
           EOF
