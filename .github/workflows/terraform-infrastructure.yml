@@ -55,6 +55,37 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
+      #################################################
+      # Generate Workflow Metadata
+      #################################################
+
+      - name: Generate Workflow Metadata
+        run: |
+
+          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
+
+          MODULE_VERSION="${GITHUB_REF_NAME}"
+
+          cat > workflow.auto.tfvars.json <<EOF
+          {
+            "workflow_tags": {
+              "repository": "${GITHUB_REPOSITORY}",
+              "terraform-module": "${MODULE_NAME}",
+              "terraform-version": "${{ steps.tf_version.outputs.version }}",
+              "module-version": "${MODULE_VERSION}",
+              "environment": "${{ inputs.environment }}",
+              "workflow-name": "${GITHUB_WORKFLOW}",
+              "workflow-run-id": "${GITHUB_RUN_ID}",
+              "workflow-run-number": "${GITHUB_RUN_NUMBER}",
+              "deployed-by": "${GITHUB_ACTOR}",
+              "commit-sha": "${GITHUB_SHA}",
+              "deployment-date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            }
+          }
+          EOF
+
+          echo "Generated workflow.auto.tfvars.json"
+          cat workflow.auto.tfvars.json
 
       #################################################
       # Format Validation
