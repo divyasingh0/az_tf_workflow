@@ -1,0 +1,17 @@
+name: Terraform Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  terraform-apply:
+    uses: org/az_tf_workflow/.github/workflows/terraform-infrastructure.yml@v1
+
+    with:
+      environment: prod
+      action: apply
+      working_directory: .
+
+    secrets: inherit
