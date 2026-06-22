@@ -1,17 +1,72 @@
 name: Terraform PR Validation
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      working_directory:
+        required: false
+        type: string
+        default: "."
+
+permissions:
+  contents: read
 
 jobs:
-  terraform-plan:
-    uses: org/az_tf_workflow/.github/workflows/terraform-infrastructure.yml@v1
 
-    with:
-      environment: dev
-      action: plan
-      working_directory: .
+  validate:
 
-    secrets: inherit
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Terraform Version
+        id: tf_version
+        run: |
+          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.tf_version.outputs.version }}
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: TFLint Init
+        run: tflint --init
+
+      - name: Run TFLint
+        run: tflint --recursive
+
+      - name: Checkov Scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: false
+
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+          -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
