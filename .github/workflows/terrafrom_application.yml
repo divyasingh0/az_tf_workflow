@@ -1,41 +1,282 @@
-name: Application Deployment
+name: Terraform Application
 
 on:
-  workflow_call:
-    inputs:
-      environment:
-        required: true
-        type: string
+workflow_call:
+inputs:
+environment:
+required: true
+type: string
 
-      application_name:
-        required: true
-        type: string
+working_directory:
+    required: false
+    type: string
+    default: "."
 
 permissions:
-  id-token: write
-  contents: read
+id-token: write
+contents: read
 
 jobs:
 
-  deploy:
+validate:
 
-    runs-on: ubuntu-latest
 
-    environment: ${{ inputs.environment }}
+runs-on: ubuntu-latest
 
-    steps:
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
 
-      - uses: actions/checkout@v4
+steps:
 
-      - name: Build
-        run: echo "Build Application"
+  #################################################
+  # Checkout
+  #################################################
 
-      - name: Test
-        run: echo "Run Unit Tests"
+  - uses: actions/checkout@v4
 
-      - name: Security Scan
-        run: echo "Run Security Scans"
+  #################################################
+  # Terraform Version
+  #################################################
 
-      - name: Deploy
-        run: |
-          echo "Deploying ${{ inputs.application_name }}"
+  - name: Read Terraform Version
+    id: tf_version
+    run: |
+      echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
+
+  #################################################
+  # Workflow Metadata
+  #################################################
+
+  - name: Generate Workflow Metadata
+    run: |
+
+      APPLICATION_NAME=$(basename "${GITHUB_REPOSITORY}")
+
+      cat > workflow.auto.tfvars.json <<EOF
+      {
+        "workflow_tags": {
+          "repository": "${GITHUB_REPOSITORY}",
+          "application": "${APPLICATION_NAME}",
+          "terraform-version": "${{ steps.tf_version.outputs.version }}",
+          "workflow-name": "${GITHUB_WORKFLOW}",
+          "workflow-run-id": "${GITHUB_RUN_ID}",
+          "commit-sha": "${GITHUB_SHA}",
+          "deployed-by": "${GITHUB_ACTOR}"
+        }
+      }
+      EOF
+
+  #################################################
+  # Environment Validation
+  #################################################
+
+  - name: Validate Environment Files
+    run: |
+      test -f environment/${{ inputs.environment }}/backend.tfvars
+      test -f environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+
+  #################################################
+  # Application Specific Validation
+  #################################################
+
+  - name: Validate Approved Templates
+    run: |
+      echo "Validating approved templates"
+
+  - name: Validate Naming Standards
+    run: |
+      echo "Validating naming standards"
+
+  - name: Validate Governance Tags
+    run: |
+      echo "Validating governance tags"
+
+  #################################################
+  # Terraform Init
+  #################################################
+
+  - name: Terraform Init
+    run: |
+      terraform init \
+        -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+
+  #################################################
+  # Terraform FMT
+  #################################################
+
+  - name: Terraform FMT
+    run: terraform fmt -check -recursive
+
+  #################################################
+  # Terraform Validate
+  #################################################
+
+  - name: Terraform Validate
+    run: terraform validate
+
+  #################################################
+  # TFLint
+  #################################################
+
+  - name: Setup TFLint
+    uses: terraform-linters/setup-tflint@v4
+
+  - name: TFLint Init
+    run: tflint --init
+
+  - name: Run TFLint
+    run: tflint --recursive
+
+  #################################################
+  # Checkov
+  #################################################
+
+  - name: Checkov Security Scan
+    uses: bridgecrewio/checkov-action@v12
+    with:
+      directory: .
+      framework: terraform
+      soft_fail: false
+
+
+plan:
+
+needs: validate
+
+runs-on: ubuntu-latest
+
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
+
+steps:
+
+  - uses: actions/checkout@v4
+
+  - name: Read Terraform Version
+    id: tf_version
+    run: |
+      echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
+
+  #################################################
+  # Azure Login (OIDC)
+  #################################################
+
+  - name: Azure Login
+    uses: azure/login@v2
+    with:
+      client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  #################################################
+  # Terraform Init
+  #################################################
+
+  - name: Terraform Init
+    run: |
+      terraform init \
+        -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+
+  #################################################
+  # Terraform Plan
+  #################################################
+
+  - name: Terraform Plan
+    run: |
+      terraform plan \
+        -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+        -out=tfplan
+
+  #################################################
+  # Plan Output
+  #################################################
+
+  - name: Generate Plan Output
+    run: terraform show -no-color tfplan > tfplan.txt
+
+  #################################################
+  # Upload Plan
+  #################################################
+
+  - name: Upload Plan Artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: tfplan-${{ github.run_id }}
+      path: |
+        tfplan
+        tfplan.txt
+
+apply:
+
+needs: plan
+
+runs-on: ubuntu-latest
+
+environment: ${{ inputs.environment }}
+
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
+
+steps:
+
+  - uses: actions/checkout@v4
+
+  - name: Read Terraform Version
+    id: tf_version
+    run: |
+      echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
+
+  #################################################
+  # Azure Login
+  #################################################
+
+  - name: Azure Login
+    uses: azure/login@v2
+    with:
+      client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  #################################################
+  # Download Approved Plan
+  #################################################
+
+  - name: Download Plan Artifact
+    uses: actions/download-artifact@v4
+    with:
+      name: tfplan-${{ github.run_id }}
+
+  #################################################
+  # Terraform Init
+  #################################################
+
+  - name: Terraform Init
+    run: |
+      terraform init \
+        -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+
+  #################################################
+  # Terraform Apply
+  #################################################
+
+  - name: Terraform Apply
+    run: terraform apply tfplan
+```
