@@ -1,20 +1,13 @@
 name: Terraform Infrastructure
 
 on:
-  workflow_call:
-    inputs:
-      environment:
-        required: true
-        type: string
+  pull_request:
+    branches:
+      - main
 
-      action:
-        required: true
-        type: string
-
-      working_directory:
-        required: false
-        type: string
-        default: "."
+  push:
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -27,11 +20,11 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    environment: ${{ inputs.environment }}
+    environment: prod
 
     defaults:
       run:
-        working-directory: ${{ inputs.working_directory }}
+        working-directory: .
 
     steps:
 
@@ -41,6 +34,8 @@ jobs:
 
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       #################################################
       # Terraform Version
@@ -55,16 +50,15 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
+
       #################################################
-      # Generate Workflow Metadata
+      # Governance Metadata
       #################################################
 
       - name: Generate Workflow Metadata
         run: |
 
-          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
-
-          MODULE_VERSION="${GITHUB_REF_NAME}"
+          MODULE_NAME=$(basename "$PWD")
 
           cat > workflow.auto.tfvars.json <<EOF
           {
@@ -76,17 +70,6 @@ jobs:
           }
           EOF
 
-          echo "Generated workflow.auto.tfvars.json"
-          cat workflow.auto.tfvars.json
-
-      #################################################
-      # Format Validation
-      #################################################
-
-      - name: Terraform FMT
-        if: inputs.action != 'apply'
-        run: terraform fmt -check -recursive
-
       #################################################
       # Terraform Init
       #################################################
@@ -94,38 +77,42 @@ jobs:
       - name: Terraform Init
         run: |
           terraform init \
-          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+            -backend-config=environment/prod/backend.tfvars
 
       #################################################
-      # Terraform Validate
+      # Validation (PR Only)
       #################################################
+
+      - name: Terraform Format Check
+        if: github.event_name == 'pull_request'
+        run: terraform fmt -check -recursive
 
       - name: Terraform Validate
-        if: inputs.action != 'apply'
+        if: github.event_name == 'pull_request'
         run: terraform validate
 
       #################################################
-      # TFLint
+      # TFLint (PR Only)
       #################################################
 
       - name: Setup TFLint
-        if: inputs.action != 'apply'
+        if: github.event_name == 'pull_request'
         uses: terraform-linters/setup-tflint@v4
 
       - name: TFLint Init
-        if: inputs.action != 'apply'
+        if: github.event_name == 'pull_request'
         run: tflint --init
 
       - name: Run TFLint
-        if: inputs.action != 'apply'
+        if: github.event_name == 'pull_request'
         run: tflint --recursive
 
       #################################################
-      # Checkov Security Scan
+      # Checkov (PR Only)
       #################################################
 
       - name: Checkov Security Scan
-        if: inputs.action != 'apply'
+        if: github.event_name == 'pull_request'
         uses: bridgecrewio/checkov-action@master
         with:
           directory: .
@@ -144,37 +131,38 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       #################################################
-      # Terraform Plan
+      # Terraform Plan (PR Only)
       #################################################
 
       - name: Terraform Plan
-        if: inputs.action == 'plan'
+        if: github.event_name == 'pull_request'
         run: |
           terraform plan \
-            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+            -var-file=environment/prod/prod.tfvars \
             -out=tfplan
 
-      #################################################
-      # Upload Plan
-      #################################################
+      - name: Generate Plan Output
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform show -no-color tfplan > tfplan.txt
 
       - name: Upload Plan Artifact
-        if: inputs.action == 'plan'
+        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-${{ inputs.environment }}
-          path: ${{ inputs.working_directory }}/tfplan
+          name: tfplan
+          path: |
+            tfplan
+            tfplan.txt
           retention-days: 30
 
       #################################################
-      # Terraform Apply
+      # Terraform Apply (Main Branch Only)
       #################################################
 
       - name: Terraform Apply
-        if: inputs.action == 'apply'
+        if: github.event_name == 'push'
         run: |
           terraform apply \
             -auto-approve \
-            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
-
-      
+            -var-file=environment/prod/prod.tfvars
