@@ -52,6 +52,31 @@ jobs:
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
 
+      #################################################
+      # Generate Workflow Metadata
+      #################################################
+
+      - name: Generate Workflow Metadata
+        run: |
+
+          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
+
+          MODULE_VERSION="${GITHUB_REF_NAME}"
+
+          cat > workflow.auto.tfvars.json <<EOF
+          {
+            "workflow_tags": {
+              "repository": "${GITHUB_REPOSITORY}",
+              "terraform-module": "${MODULE_NAME}",
+              "terraform-version": "${{ steps.tf_version.outputs.version }}"
+            }
+          }
+          EOF
+
+          echo "Generated workflow.auto.tfvars.json"
+          cat workflow.auto.tfvars.json
+
+
       ####################################################
       # Format Check
       ####################################################
