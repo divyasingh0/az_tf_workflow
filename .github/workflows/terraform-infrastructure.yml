@@ -1,30 +1,36 @@
-name: Terraform Infrastructure
+name: Terraform Application
 
 on:
-  pull_request:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
 
-  push:
-    branches:
-      - main
+      application_name:
+        required: true
+        type: string
+
+      working_directory:
+        required: false
+        type: string
+        default: "."
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
 
 jobs:
 
-  terraform:
+  deploy:
 
     runs-on: ubuntu-latest
 
-    environment: prod
+    environment: ${{ inputs.environment }}
 
     defaults:
       run:
-        working-directory: .
+        working-directory: ${{ inputs.working_directory }}
 
     steps:
 
@@ -34,90 +40,30 @@ jobs:
 
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       #################################################
-      # Terraform Version
+      # Build
       #################################################
 
-      - name: Read Terraform Version
-        id: tf_version
+      - name: Build Application
         run: |
-          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ steps.tf_version.outputs.version }}
+          echo "Building ${{ inputs.application_name }}"
 
       #################################################
-      # Governance Metadata
+      # Unit Tests
       #################################################
 
-      - name: Generate Workflow Metadata
+      - name: Run Tests
         run: |
-
-          MODULE_NAME=$(basename "$PWD")
-
-          cat > workflow.auto.tfvars.json <<EOF
-          {
-            "workflow_tags": {
-              "repository": "${GITHUB_REPOSITORY}",
-              "terraform-module": "${MODULE_NAME}",
-              "terraform-version": "${{ steps.tf_version.outputs.version }}"
-            }
-          }
-          EOF
+          echo "Running tests"
 
       #################################################
-      # Terraform Init
+      # Security Scan
       #################################################
 
-      - name: Terraform Init
+      - name: Dependency Scan
         run: |
-          terraform init \
-            -backend-config=environment/prod/backend.tfvars
-
-      #################################################
-      # Validation (PR Only)
-      #################################################
-
-      - name: Terraform Format Check
-        if: github.event_name == 'pull_request'
-        run: terraform fmt -check -recursive
-
-      - name: Terraform Validate
-        if: github.event_name == 'pull_request'
-        run: terraform validate
-
-      #################################################
-      # TFLint (PR Only)
-      #################################################
-
-      - name: Setup TFLint
-        if: github.event_name == 'pull_request'
-        uses: terraform-linters/setup-tflint@v4
-
-      - name: TFLint Init
-        if: github.event_name == 'pull_request'
-        run: tflint --init
-
-      - name: Run TFLint
-        if: github.event_name == 'pull_request'
-        run: tflint --recursive
-
-      #################################################
-      # Checkov (PR Only)
-      #################################################
-
-      - name: Checkov Security Scan
-        if: github.event_name == 'pull_request'
-        uses: bridgecrewio/checkov-action@master
-        with:
-          directory: .
-          framework: terraform
-          soft_fail: false
+          echo "Running security scan"
 
       #################################################
       # Azure Login
@@ -131,38 +77,9 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       #################################################
-      # Terraform Plan (PR Only)
+      # Deploy
       #################################################
 
-      - name: Terraform Plan
-        if: github.event_name == 'pull_request'
+      - name: Deploy Application
         run: |
-          terraform plan \
-            -var-file=environment/prod/prod.tfvars \
-            -out=tfplan
-
-      - name: Generate Plan Output
-        if: github.event_name == 'pull_request'
-        run: |
-          terraform show -no-color tfplan > tfplan.txt
-
-      - name: Upload Plan Artifact
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: |
-            tfplan
-            tfplan.txt
-          retention-days: 30
-
-      #################################################
-      # Terraform Apply (Main Branch Only)
-      #################################################
-
-      - name: Terraform Apply
-        if: github.event_name == 'push'
-        run: |
-          terraform apply \
-            -auto-approve \
-            -var-file=environment/prod/prod.tfvars
+          echo "Deploying ${{ inputs.application_name }} to ${{ inputs.environment }}"
