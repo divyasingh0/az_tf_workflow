@@ -1,19 +1,13 @@
-name: Terraform PR Validation
+
+  name: Terraform PR Workflow
 
 on:
-  workflow_call:
-    inputs:
-      environment:
-        required: true
-        type: string
-      working_directory:
-        required: false
-        type: string
-        default: "."
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
   id-token: write
+  contents: read
 
 jobs:
 
@@ -26,7 +20,6 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -39,20 +32,32 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
-          
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform Init
+      - name: Generate Workflow Metadata
+        run: |
+          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
+
+          cat > workflow.auto.tfvars.json <<EOF
+          {
+            "workflow_tags": {
+              "repository": "${GITHUB_REPOSITORY}",
+              "terraform-module": "${MODULE_NAME}",
+              "terraform-version": "${{ steps.tf_version.outputs.version }}"
+            }
+          }
+          EOF
+
+      - name: Validate Environment Files
+        run: |
+          test -f environment/${{ inputs.environment }}/backend.tfvars
+          test -f environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+
+      - name: Terraform Init (Azure backend via OIDC)
         run: |
           terraform init \
           -backend-config=environment/${{ inputs.environment }}/backend.tfvars
 
-      - name: Terraform Format Check
+      - name: Terraform FMT
         run: terraform fmt -check -recursive
 
       - name: Terraform Validate
@@ -67,14 +72,62 @@ jobs:
       - name: Run TFLint
         run: tflint --recursive
 
-      - name: Checkov Scan
+      - name: Checkov Security Scan
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: .
           framework: terraform
           soft_fail: false
 
+  plan:
+
+    needs: validate
+
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Terraform Version
+        id: tf_version
+        run: |
+          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.tf_version.outputs.version }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init (Azure backend via OIDC)
+        run: |
+          terraform init \
+          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+
       - name: Terraform Plan
         run: |
           terraform plan \
-          -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+          -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+          -out=tfplan
+
+      - name: Generate Plan Output
+        run: terraform show -no-color tfplan > tfplan.txt
+
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.sha }}
+          path: |
+            tfplan
+            tfplan.txt
