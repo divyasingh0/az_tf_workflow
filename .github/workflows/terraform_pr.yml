@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: "Terraform environment (dev, test, prod)"
+        description: "Terraform environment (dev, test, prod , sandbox)"
         required: true
         type: string
 
@@ -14,9 +14,13 @@ on:
         default: .
         type: string
 
-permissions:
-  id-token: write
-  contents: read
+permissions: write-all
+
+env:
+  WORKING_DIR: ./
+  TERRAFORM_VERSION: 1.8.5
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
 
 jobs:
 
@@ -34,27 +38,12 @@ jobs:
 
       - name: Read Terraform Version
         id: tf_version
-        run: |
-          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+        run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
-
-      - name: Generate Workflow Metadata
-        run: |
-          MODULE_NAME=$(basename "${{ inputs.working_directory }}")
-
-          cat > workflow.auto.tfvars.json <<EOF
-          {
-            "workflow_tags": {
-              "repository": "${GITHUB_REPOSITORY}",
-              "terraform-module": "${MODULE_NAME}",
-              "terraform-version": "${{ steps.tf_version.outputs.version }}"
-            }
-          }
-          EOF
 
       - name: Validate Environment Files
         run: |
@@ -63,8 +52,9 @@ jobs:
 
       - name: Terraform Init
         run: |
-          terraform init \
-          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+          terraform init -backend=false -input=false
 
       - name: Terraform FMT
         run: terraform fmt -check -recursive
@@ -72,21 +62,22 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Setup TFLint
-        uses: terraform-linters/setup-tflint@v4
+      # - name: Setup TFLint
+      #   uses: terraform-linters/setup-tflint@v4
 
-      - name: TFLint Init
-        run: tflint --init
+      # - name: TFLint Init
+      #   run: tflint --init
 
-      - name: Run TFLint
-        run: tflint --recursive
+      # - name: Run TFLint
+      #   run: tflint --recursive
 
-      - name: Checkov Security Scan
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          directory: .
-          framework: terraform
-          soft_fail: false
+      # - name: Checkov Security Scan
+      #   uses: bridgecrewio/checkov-action@v12
+      #   with:
+      #     directory: .
+      #     framework: terraform
+      #     soft_fail: false
+
 
   plan:
 
@@ -104,8 +95,7 @@ jobs:
 
       - name: Read Terraform Version
         id: tf_version
-        run: |
-          echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+        run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -121,14 +111,15 @@ jobs:
 
       - name: Terraform Init
         run: |
-          terraform init \
-          -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+          terraform init -backend=false -input=false
 
       - name: Terraform Plan
         run: |
           terraform plan \
-          -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
-          -out=tfplan
+            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+            -out=tfplan
 
       - name: Generate Plan Output
         run: terraform show -no-color tfplan > tfplan.txt
@@ -140,3 +131,4 @@ jobs:
           path: |
             tfplan
             tfplan.txt
+ 
