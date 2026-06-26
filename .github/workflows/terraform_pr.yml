@@ -1,10 +1,11 @@
+
 name: Terraform PR Workflow
 
 on:
   workflow_call:
     inputs:
       environment:
-        description: "Terraform environment (dev, test, prod , sandbox)"
+        description: "Terraform environment"
         required: true
         type: string
 
@@ -14,22 +15,19 @@ on:
         default: .
         type: string
 
-# permissions: write-all
 permissions:
-  contents: read
   id-token: write
+  contents: read
 
 env:
-  WORKING_DIR: ./
-  TERRAFORM_VERSION: 1.8.5
   TF_IN_AUTOMATION: true
   TF_INPUT: false
 
 jobs:
 
   validate:
-
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     defaults:
       run:
@@ -38,6 +36,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Debug Secret Presence
+        run: |
+          echo "CLIENT_ID_PRESENT=${{ secrets.AZURE_CLIENT_ID != '' }}"
+          echo "TENANT_ID_PRESENT=${{ secrets.AZURE_TENANT_ID != '' }}"
+          echo "SUBSCRIPTION_ID_PRESENT=${{ secrets.AZURE_SUBSCRIPTION_ID != '' }}"
 
       - name: Read Terraform Version
         id: tf_version
@@ -56,7 +60,6 @@ jobs:
       - name: Terraform Init
         run: |
           git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
-
           terraform init -backend=false -input=false
 
       - name: Terraform FMT
@@ -65,28 +68,11 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      # - name: Setup TFLint
-      #   uses: terraform-linters/setup-tflint@v4
-
-      # - name: TFLint Init
-      #   run: tflint --init
-
-      # - name: Run TFLint
-      #   run: tflint --recursive
-
-      # - name: Checkov Security Scan
-      #   uses: bridgecrewio/checkov-action@v12
-      #   with:
-      #     directory: .
-      #     framework: terraform
-      #     soft_fail: false
-
-
   plan:
-
     needs: validate
 
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
 
     defaults:
       run:
@@ -105,7 +91,7 @@ jobs:
         with:
           terraform_version: ${{ steps.tf_version.outputs.version }}
 
-      - name: Azure Login (OIDC)
+      - name: Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -115,8 +101,8 @@ jobs:
       - name: Terraform Init
         run: |
           git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
-
-          terraform init -backend=false -input=false
+          terraform init -input=false
+          # terraform init -backend-config=environment/${{ inputs.environment }}/backend.tfvars -input=false
 
       - name: Terraform Plan
         run: |
@@ -134,4 +120,3 @@ jobs:
           path: |
             tfplan
             tfplan.txt
- 

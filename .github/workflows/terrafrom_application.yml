@@ -1,156 +1,130 @@
-name: Terraform Application
+name: Terraform Application Workflow
 
 on:
-  workflow_call:
-    inputs:
-      environment:
-        required: true
-        type: string
-      working_directory:
-        required: false
-        type: string
-        default: "."
+workflow_call:
+inputs:
+environment:
+description: "Terraform environment"
+required: true
+type: string
 
-    secrets:
-      AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
-      AZURE_SUBSCRIPTION_ID:
-        required: true
+ 
+  working_directory:
+    description: "Terraform working directory"
+    required: false
+    default: "."
+    type: string
+ 
 
 permissions:
-  id-token: write
-  contents: read
+id-token: write
+contents: read
+
+env:
+TF_IN_AUTOMATION: true
+TF_INPUT: false
 
 jobs:
+plan:
+runs-on: ubuntu-latest
+environment: ${{ inputs.environment }}
 
-  validate:
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+ 
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
 
-    defaults:
-      run:
-        working-directory: ${{ inputs.working_directory }}
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-    steps:
-      - uses: actions/checkout@v4
+  - name: Read Terraform Version
+    id: tf_version
+    run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
 
-      - name: Read Terraform Version
-        id: tf_version
-        run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ steps.tf_version.outputs.version }}
+  - name: Azure Login
+    uses: azure/login@v2
+    with:
+      client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Validate Environment Files
-        run: |
-          test -f environment/${{ inputs.environment }}/backend.tfvars
-          test -f environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+  - name: Configure GitHub Authentication
+    run: |
+      git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
 
-      - name: Terraform Init
-        run: |
-          terraform init \
-            -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+  - name: Terraform Init
+    run: |
+      terraform init \
+        -backend-config=environment/${{ inputs.environment }}/backend.tfvars
 
-      - name: Terraform FMT
-        run: terraform fmt -check -recursive
+  - name: Terraform Plan
+    run: |
+      terraform plan \
+        -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+        -out=tfplan
 
-      - name: Terraform Validate
-        run: terraform validate
+  - name: Generate Plan Output
+    run: terraform show -no-color tfplan > tfplan.txt
 
+  - name: Upload Plan Artifact
+    uses: actions/upload-artifact@v4
+    with:
+      name: tfplan-${{ github.run_id }}
+      path: |
+        tfplan
+        tfplan.txt
+ 
 
-  plan:
-    needs: validate
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+apply:
+needs: plan
+runs-on: ubuntu-latest
+environment: ${{ inputs.environment }}
 
-    defaults:
-      run:
-        working-directory: ${{ inputs.working_directory }}
+ 
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
 
-    steps:
-      - uses: actions/checkout@v4
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-      - name: Read Terraform Version
-        id: tf_version
-        run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+  - name: Read Terraform Version
+    id: tf_version
+    run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ steps.tf_version.outputs.version }}
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
 
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  - name: Azure Login
+    uses: azure/login@v2
+    with:
+      client-id: ${{ secrets.AZURE_CLIENT_ID }}
+      tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+      subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform Init
-        run: |
-          terraform init \
-            -backend-config=environment/${{ inputs.environment }}/backend.tfvars
+  - name: Download Plan Artifact
+    uses: actions/download-artifact@v4
+    with:
+      name: tfplan-${{ github.run_id }}
 
-      - name: Terraform Plan
-        run: |
-          terraform plan \
-            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
-            -out=tfplan
+  - name: Configure GitHub Authentication
+    run: |
+      git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
 
-      - name: Generate Plan Output
-        run: terraform show -no-color tfplan > tfplan.txt
+  - name: Terraform Init
+    run: |
+      terraform init \
+        -backend-config=environment/${{ inputs.environment }}/backend.tfvars
 
-      - name: Upload Plan Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-          path: |
-            tfplan
-            tfplan.txt
-
-
-  apply:
-    needs: plan
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-
-    defaults:
-      run:
-        working-directory: ${{ inputs.working_directory }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read Terraform Version
-        id: tf_version
-        run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ steps.tf_version.outputs.version }}
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ github.run_id }}
-
-      - name: Terraform Init
-        run: |
-          terraform init \
-            -backend-config=environment/${{ inputs.environment }}/backend.tfvars
-
-      - name: Terraform Apply
-        run: terraform apply tfplan
+  - name: Terraform Apply
+    run: terraform apply -auto-approve tfplan
  

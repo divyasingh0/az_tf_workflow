@@ -1,0 +1,75 @@
+name: Terraform Feature Workflow
+
+on:
+workflow_call:
+inputs:
+environment:
+description: "Terraform environment"
+required: true
+type: string
+
+
+  working_directory:
+    description: "Terraform working directory"
+    required: false
+    default: "."
+    type: string
+
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+TF_IN_AUTOMATION: true
+TF_INPUT: false
+
+jobs:
+validate:
+runs-on: ubuntu-latest
+environment: ${{ inputs.environment }}
+
+
+defaults:
+  run:
+    working-directory: ${{ inputs.working_directory }}
+
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
+
+  - name: Read Terraform Version
+    id: tf_version
+    run: echo "version=$(cat .terraform-version)" >> $GITHUB_OUTPUT
+
+  - name: Setup Terraform
+    uses: hashicorp/setup-terraform@v3
+    with:
+      terraform_version: ${{ steps.tf_version.outputs.version }}
+
+  # - name: Setup TFLint
+  #   uses: terraform-linters/setup-tflint@v4
+
+  - name: Validate Environment Files
+    run: |
+      test -f environment/${{ inputs.environment }}/backend.tfvars
+      test -f environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+
+  - name: Configure GitHub Authentication
+    run: |
+      git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+  - name: Terraform Init
+    run: terraform init -backend=false -input=false
+
+  - name: Terraform Format Check
+    run: terraform fmt -check -recursive
+
+  # - name: Initialize TFLint
+  #   run: tflint --init
+
+  # - name: Run TFLint
+  #   run: tflint --recursive
+
+  - name: Terraform Validate
+    run: terraform validate
