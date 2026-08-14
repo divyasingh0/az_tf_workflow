@@ -1,33 +1,58 @@
 name: release-trigger
 
-# Entry point. This is the ONLY workflow you attach to a trigger event;
-# it just calls the reusable release.yml with your org's configuration.
+# Entry point for the release process.
+# This workflow triggers the reusable release workflow on:
+#   - Push to main
+#   - Manual workflow dispatch
+#
+# All release logic is handled by .github/workflows/release.yml.
 
 on:
+  # ---------------------------------------------------------------------------
+  # Automatic release
+  # ---------------------------------------------------------------------------
   push:
-    branches: [main]
+    branches:
+      - main
+
+  # ---------------------------------------------------------------------------
+  # Manual release
+  # ---------------------------------------------------------------------------
   workflow_dispatch:
     inputs:
       bump_override:
-        description: "Force a version bump"
+        description: "Version bump to apply"
         type: choice
-        options: [auto, patch, minor, major]
-        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
       dry_run:
-        description: "Preview only, do not tag or publish"
+        description: "Preview release without creating a tag or publishing"
         type: boolean
-        default: false
+
+# -------------------------------------------------------------------------------
+# Permissions
+# -------------------------------------------------------------------------------
 permissions:
   contents: write
   pull-requests: read
 
 jobs:
+
+  # ============================================================================
+  # Release
+  # ============================================================================
   release:
+    name: Create Release
     uses: ./.github/workflows/release.yml
+
     with:
       tag_prefix: ${{ vars.RELEASE_TAG_PREFIX || 'workflow-v' }}
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}
+
     secrets: inherit
- 
