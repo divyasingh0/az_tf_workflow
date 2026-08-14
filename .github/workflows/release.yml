@@ -1,0 +1,148 @@
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    needs: version
+    if: needs.version.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      released_version: ${{ steps.tag.outputs.version }}
+      released_tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create annotated tag
+        id: tag
+        shell: bash
+        env:
+          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+          NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+          BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run - would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
+            exit 0
+          fi
+
+          git tag -a -m "Release $NEXT_TAG" -- "$NEXT_TAG"
+          git push origin -- "refs/tags/$NEXT_TAG"
+
+      - name: Generate PR-only release notes
+        if: inputs.dry_run == false
+        id: notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          PRS_FILE="$RUNNER_TEMP/release-prs.jsonl"
+          PREVIOUS_TAG_FILE="$RUNNER_TEMP/previous-tag.txt"
+
+          : > "$PRS_FILE"
+
+          if git describe --tags --abbrev=0 "${TAG}^" > "$PREVIOUS_TAG_FILE" 2>/dev/null; then
+            PREVIOUS_TAG="$(<"$PREVIOUS_TAG_FILE")"
+            mapfile -t COMMITS < <(git rev-list "$TAG" "^$PREVIOUS_TAG")
+          else
+            PREVIOUS_TAG=""
+            mapfile -t COMMITS < <(git rev-list "$TAG")
+          fi
+
+          # Direct commits have no associated PR and are intentionally omitted.
+          for SHA in "${COMMITS[@]}"; do
+            gh api \
+              --paginate \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls?per_page=100" \
+              --jq '
+                .[]
+                | select(.merged_at != null)
+                | select(
+                    ([.labels[].name | ascii_downcase]
+                    | any(. == "skip-changelog" or . == "internal"))
+                    | not
+                  )
+                | {
+                    number: .number,
+                    title: (.title | gsub("[\r\n]+"; " ")),
+                    author: (.user.login // "ghost")
+                  }
+              ' >> "$PRS_FILE"
+          done
+
+          {
+            echo "## What's Changed"
+            echo
+
+            if [[ -s "$PRS_FILE" ]]; then
+              jq -rs '
+                unique_by(.number)
+                | sort_by(.number)
+                | .[]
+                | "- \(.title) (#\(.number)) by @\(.author)"
+              ' "$PRS_FILE"
+            else
+              echo "No customer-facing changes are included in this release."
+            fi
+
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              echo
+              echo "**Full comparison:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG}"
+            fi
+          } > "$NOTES_FILE"
+
+          echo "file=$NOTES_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        if: inputs.dry_run == false
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NOTES_FILE: ${{ steps.notes.outputs.file }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          ARGS=(
+            --title "$TAG"
+            --notes-file "$NOTES_FILE"
+          )
+
+          [[ "$DRAFT" == "true" ]] && ARGS+=(--draft)
+          [[ "$PRERELEASE" == "true" ]] && ARGS+=(--prerelease)
+
+          gh release create "$TAG" "${ARGS[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release Summary"
+            echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
+            echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
+            echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+ 

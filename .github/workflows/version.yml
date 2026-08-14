@@ -1,0 +1,167 @@
+name: release-version
+
+# Reusable workflow: computes the next SemVer version from Conventional Commits.
+# Supports monorepo "scoped" components (e.g. compute, network, storage) via
+# the `scope` input, matched against Conventional Commit scopes like fix(compute): ...
+
+on:
+  workflow_call:
+    inputs:
+      tag_prefix:
+        description: "Prefix used for git tags, e.g. 'v' -> v1.2.3"
+        required: false
+        type: string
+        default: "v"
+      scope:
+        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
+        required: false
+        type: string
+        default: ""
+      initial_version:
+        description: "Baseline version used when no prior tag exists"
+        required: false
+        type: string
+        default: "0.1.0"
+      bump_override:
+        description: "Force a bump instead of auto-detecting: auto|major|minor|patch"
+        required: false
+        type: string
+        default: "auto"
+    outputs:
+      current_version:
+        description: "Latest released version (no prefix). Equals initial_version if no tags exist."
+        value: ${{ jobs.compute.outputs.current_version }}
+      next_version:
+        description: "Computed next version (no prefix)"
+        value: ${{ jobs.compute.outputs.next_version }}
+      next_tag:
+        description: "Computed next version WITH prefix, e.g. v1.3.0"
+        value: ${{ jobs.compute.outputs.next_tag }}
+      bump_type:
+        description: "major | minor | patch | none"
+        value: ${{ jobs.compute.outputs.bump_type }}
+      has_changes:
+        description: "true if there are releasable commits since the last tag"
+        value: ${{ jobs.compute.outputs.has_changes }}
+
+permissions:
+  contents: read
+
+jobs:
+  compute:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ steps.semver.outputs.current_version }}
+      next_version: ${{ steps.semver.outputs.next_version }}
+      next_tag: ${{ steps.semver.outputs.next_tag }}
+      bump_type: ${{ steps.semver.outputs.bump_type }}
+      has_changes: ${{ steps.semver.outputs.has_changes }}
+    steps:
+      # see the full history and every existing tag.
+      - name: Checkout full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Compute next semantic version
+        id: semver
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          SCOPE: ${{ inputs.scope }}
+          INITIAL_VERSION: ${{ inputs.initial_version }}
+          BUMP_OVERRIDE: ${{ inputs.bump_override }}
+        run: |
+          set -euo pipefail
+
+          # Find latest release tag FOR THIS COMPONENT (tag_prefix scopes this)
+          LAST_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1 || true)
+
+          if [[ -z "$LAST_TAG" ]]; then
+            CURRENT_VERSION="$INITIAL_VERSION"
+            echo "No existing tags found for prefix '$TAG_PREFIX'. Baseline version: $CURRENT_VERSION"
+          else
+            CURRENT_VERSION="${LAST_TAG#"$TAG_PREFIX"}"
+            echo "Latest tag: $LAST_TAG"
+          fi
+
+          # Look at ALL commits since this component's last tag (not just the last commit).
+          RANGE="HEAD"
+          [[ -n "$LAST_TAG" ]] && RANGE="${LAST_TAG}..HEAD"
+          COMMITS=$(git log "$RANGE" --pretty=format:"%s%n%b%n---")
+
+          # Build the scope pattern:
+          # - if SCOPE is set (e.g. "compute"), only match that exact scope: fix(compute):
+          # - if SCOPE is empty, match any scope OR no scope at all (repo-wide mode)
+          if [[ -n "$SCOPE" ]]; then
+            SCOPE_RE="\\(${SCOPE}\\)"
+          else
+            SCOPE_RE="(\\([^)]*\\))?"
+          fi
+
+          HAS_CHANGES="false"
+          BUMP="none"
+
+          if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
+            BUMP="$BUMP_OVERRIDE"
+            HAS_CHANGES="true"
+
+          elif echo "$COMMITS" | grep -qiE "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
+            BUMP="major"
+            HAS_CHANGES="true"
+
+          elif echo "$COMMITS" | grep -qE "^feat${SCOPE_RE}:"; then
+            BUMP="minor"
+            HAS_CHANGES="true"
+
+          elif echo "$COMMITS" | grep -qE "^fix${SCOPE_RE}:"; then
+            BUMP="patch"
+            HAS_CHANGES="true"
+          fi
+
+          # No releasable commit found for this scope
+          if [[ "$HAS_CHANGES" == "false" ]]; then
+            echo "No releasable commits found for scope '${SCOPE:-<repo-wide>}'."
+
+            {
+              echo "has_changes=false"
+              echo "current_version=$CURRENT_VERSION"
+              echo "next_version=$CURRENT_VERSION"
+              echo "next_tag=${TAG_PREFIX}${CURRENT_VERSION}"
+              echo "bump_type=none"
+            } >> "$GITHUB_OUTPUT"
+
+            exit 0
+          fi
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR+1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR+1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH+1))
+              ;;
+          esac
+
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          NEXT_TAG="${TAG_PREFIX}${NEXT_VERSION}"
+
+          echo "Release detected for scope '${SCOPE:-<repo-wide>}': $BUMP"
+          echo "Next version: $NEXT_VERSION"
+
+          {
+            echo "has_changes=true"
+            echo "current_version=$CURRENT_VERSION"
+            echo "next_version=$NEXT_VERSION"
+            echo "next_tag=$NEXT_TAG"
+            echo "bump_type=$BUMP"
+          } >> "$GITHUB_OUTPUT"
