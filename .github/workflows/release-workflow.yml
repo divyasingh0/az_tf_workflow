@@ -5,7 +5,12 @@ name: release-trigger
 #   - Push to main
 #   - Manual workflow dispatch
 #
+# Two independent release streams are maintained:
+#   - workflow-vX.Y.Z
+#   - release-vX.Y.Z
+#
 # All release logic is handled by .github/workflows/release.yml.
+
 on:
   # ---------------------------------------------------------------------------
   # Automatic release
@@ -32,6 +37,7 @@ on:
         description: "Preview release without creating a tag or publishing"
         type: boolean
 
+
 # -------------------------------------------------------------------------------
 # Permissions
 # -------------------------------------------------------------------------------
@@ -39,7 +45,24 @@ permissions:
   contents: write
   pull-requests: read
 
+
 jobs:
+
+  # ============================================================================
+  # Workflow Release
+  # ============================================================================
+  workflow-release:
+    name: Create Workflow Release
+    uses: ./.github/workflows/release.yml
+
+    with:
+      tag_prefix: workflow-v
+      initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
+      bump_override: ${{ inputs.bump_override || 'auto' }}
+      dry_run: ${{ inputs.dry_run || false }}
+
+    secrets: inherit
+
 
   # ============================================================================
   # Release
@@ -49,7 +72,7 @@ jobs:
     uses: ./.github/workflows/release.yml
 
     with:
-      tag_prefix: ${{ vars.RELEASE_TAG_PREFIX || 'workflow-v' }}
+      tag_prefix: release-v
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}
