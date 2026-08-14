@@ -3,7 +3,6 @@ name: release-trigger
 # Entry point. This is the ONLY workflow you attach to a trigger event;
 # it just calls the reusable release.yml with your org's configuration.
 
-
 on:
   push:
     branches: [main]
