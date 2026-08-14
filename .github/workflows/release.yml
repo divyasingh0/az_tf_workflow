@@ -47,7 +47,7 @@ on:
 
 permissions:
   contents: write
-  id-token: write
+  pull-requests: read
 
 # Prevent two releases from racing on the same ref.
 # tag_prefix is included so compute/network/storage runs don't block each other.
