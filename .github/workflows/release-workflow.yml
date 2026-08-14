@@ -19,6 +19,7 @@ on:
         default: false
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   release:
