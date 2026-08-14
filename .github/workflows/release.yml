@@ -1,47 +1,66 @@
 name: Release
 
-# Reusable workflow: consumes version.yml's output, creates an ANNOTATED git tag,
-# and publishes a GitHub Release with an auto-generated changelog.
-# Supports monorepo "scoped" components (e.g. compute, network, storage) via
-# the `scope` input, matched against Conventional Commit scopes like fix(compute): ...
-
+# Reusable workflow: calculates the next version, creates an annotated
+# Git tag, and publishes a GitHub Release with PR-based release notes.
 
 on:
   workflow_call:
     inputs:
       tag_prefix:
+        description: "Prefix for the release tag"
+        required: false
         type: string
         default: "v"
+
       scope:
-        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
+        description: "Conventional commit scope, e.g. compute. Empty = repo-wide."
         required: false
         type: string
         default: ""
+
       initial_version:
+        description: "Initial version when no previous tag exists"
+        required: false
         type: string
         default: "0.1.0"
+
       bump_override:
+        description: "Force version bump"
+        required: false
         type: string
         default: "auto"
+
       dry_run:
-        description: "Compute and log the release without tagging or publishing"
+        description: "Preview only. Do not create tag or release."
+        required: false
         type: boolean
         default: false
+
       draft:
+        description: "Create the GitHub Release as a draft"
+        required: false
         type: boolean
         default: false
+
       prerelease:
+        description: "Create the GitHub Release as a prerelease"
+        required: false
         type: boolean
         default: false
+
       target_commitish:
-        description: "Branch/SHA the tag should point to (defaults to triggering ref)"
+        description: "Branch/SHA the release should target"
+        required: false
         type: string
         default: ""
+
     outputs:
       released_version:
         value: ${{ jobs.release.outputs.released_version }}
+
       released_tag:
         value: ${{ jobs.release.outputs.released_tag }}
+
       bump_type:
         value: ${{ jobs.version.outputs.bump_type }}
 
@@ -49,13 +68,15 @@ permissions:
   contents: write
   pull-requests: read
 
-# Prevent two releases from racing on the same ref.
-# tag_prefix is included so compute/network/storage runs don't block each other.
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag_prefix }}
   cancel-in-progress: false
 
 jobs:
+
+  # ---------------------------------------------------------
+  # Calculate next version
+  # ---------------------------------------------------------
   version:
     uses: ./.github/workflows/version.yml
     with:
@@ -64,85 +85,41 @@ jobs:
       initial_version: ${{ inputs.initial_version }}
       bump_override: ${{ inputs.bump_override }}
 
+  # ---------------------------------------------------------
+  # Create tag and GitHub Release
+  # ---------------------------------------------------------
   release:
     name: Release
     needs: version
     if: needs.version.outputs.has_changes == 'true'
+
     runs-on: ubuntu-latest
+
     outputs:
       released_version: ${{ steps.tag.outputs.version }}
       released_tag: ${{ steps.tag.outputs.tag }}
+
     steps:
+
+      # -----------------------------------------------------
+      # Checkout repository
+      # -----------------------------------------------------
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      - name: Configure git identity for the tag
+      # -----------------------------------------------------
+      # Configure Git
+      # -----------------------------------------------------
+      - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Generate changelog since last tag
-        id: changelog
-        shell: bash
-        env:
-          TAG_PREFIX: ${{ inputs.tag_prefix }}
-          SCOPE: ${{ inputs.scope }}
-        run: |
-          set -euo pipefail
-
-          LAST_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1 || true)
-          RANGE="HEAD"
-          [[ -n "$LAST_TAG" ]] && RANGE="${LAST_TAG}..HEAD"
-
-          COMMITS=$(git log "$RANGE" --pretty=format:"%s|%h" --no-merges)
-
-          if [[ -n "$SCOPE" ]]; then
-            SCOPE_RE="\\(${SCOPE}\\)"
-          else
-            SCOPE_RE="(\\([^)]*\\))?"
-          fi
-
-          FEATURES=""
-          FIXES=""
-          BREAKING=""
-          OTHER=""
-
-          while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            SUBJECT="${line%%|*}"
-            HASH="${line##*|}"
-
-            # If we're a scoped component, skip commits that don't mention our scope
-            if [[ -n "$SCOPE" ]] && ! echo "$SUBJECT" | grep -qE "${SCOPE_RE}"; then
-              continue
-            fi
-
-            if echo "$SUBJECT" | grep -qE "^[a-zA-Z]+${SCOPE_RE}!:"; then
-              BREAKING+="* ${SUBJECT} (${HASH})"$'\n'
-            elif echo "$SUBJECT" | grep -qE "^feat${SCOPE_RE}:"; then
-              FEATURES+="* ${SUBJECT} (${HASH})"$'\n'
-            elif echo "$SUBJECT" | grep -qE "^fix${SCOPE_RE}:"; then
-              FIXES+="* ${SUBJECT} (${HASH})"$'\n'
-            else
-              OTHER+="* ${SUBJECT} (${HASH})"$'\n'
-            fi
-          done <<< "$COMMITS"
-
-          {
-            echo "changelog<<CHANGELOG_EOF"
-            echo "## What's Changed"
-            echo ""
-            [[ -n "$BREAKING" ]]  && { echo "### ⚠ BREAKING CHANGES"; echo "$BREAKING"; }
-            [[ -n "$FEATURES" ]]  && { echo "### 🚀 Features"; echo "$FEATURES"; }
-            [[ -n "$FIXES" ]]     && { echo "### 🐛 Bug Fixes"; echo "$FIXES"; }
-            [[ -n "$OTHER" ]]     && { echo "### Other Changes"; echo "$OTHER"; }
-            echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # git tag -a creates a full, signed-metadata ANNOTATED tag
-
+      # -----------------------------------------------------
+      # Create annotated tag
+      # -----------------------------------------------------
       - name: Create annotated tag
         id: tag
         shell: bash
@@ -153,35 +130,85 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
 
           if [[ "$DRY_RUN" == "true" ]]; then
-            echo "::notice::Dry run — would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
+            echo "::notice::Dry run - would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
             exit 0
           fi
 
           git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
           git push origin "$NEXT_TAG"
 
+      # -----------------------------------------------------
+      # Generate GitHub release notes
+      #
+      # GitHub generates these from merged PRs rather than
+      # listing every individual commit.
+      # -----------------------------------------------------
+      - name: Generate release notes
+        if: inputs.dry_run == false
+        id: changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARGET: ${{ inputs.target_commitish }}
+        run: |
+          set -euo pipefail
+
+          ARGS=(
+            --method POST
+            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes"
+            -f "tag_name=$TAG"
+          )
+
+          if [[ -n "$TARGET" ]]; then
+            ARGS+=(-f "target_commitish=$TARGET")
+          fi
+
+          gh api "${ARGS[@]}" > "$RUNNER_TEMP/release-notes.json"
+
+          jq -r '.body' "$RUNNER_TEMP/release-notes.json" \
+            > "$RUNNER_TEMP/release-notes.md"
+
+          {
+            echo "changelog<<RELEASE_NOTES_EOF"
+            cat "$RUNNER_TEMP/release-notes.md"
+            echo
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------
+      # Create GitHub Release
+      # -----------------------------------------------------
       - name: Create GitHub Release
         if: inputs.dry_run == false
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
           NOTES: ${{ steps.changelog.outputs.changelog }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
-          TARGET: ${{ inputs.target_commitish }}
         run: |
           set -euo pipefail
-          ARGS=(--title "$TAG" --notes "$NOTES")
+
+          ARGS=(
+            --title "$TAG"
+            --notes "$NOTES"
+          )
+
           [[ "$DRAFT" == "true" ]] && ARGS+=(--draft)
           [[ "$PRERELEASE" == "true" ]] && ARGS+=(--prerelease)
-          [[ -n "$TARGET" ]] && ARGS+=(--target "$TARGET")
 
           gh release create "$TAG" "${ARGS[@]}"
 
+      # -----------------------------------------------------
+      # Summary
+      # -----------------------------------------------------
       - name: Summary
         if: always()
         run: |
