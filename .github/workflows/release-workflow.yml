@@ -6,7 +6,6 @@ name: release-trigger
 #   - Manual workflow dispatch
 #
 # All release logic is handled by .github/workflows/release.yml.
-
 on:
   # ---------------------------------------------------------------------------
   # Automatic release
