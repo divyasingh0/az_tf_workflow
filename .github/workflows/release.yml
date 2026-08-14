@@ -1,19 +1,35 @@
 name: Release
 
-# Reusable workflow: calculates the next version, creates an annotated
-# Git tag, and publishes a GitHub Release with PR-based release notes.
+# Reusable workflow:
+#   1. Calculates the next semantic version.
+#   2. Creates an annotated Git tag.
+#   3. Creates a GitHub Release containing only the PR
+#      that triggered the release.
+#
+# Release streams are controlled by the Conventional Commit scope.
+#
+# Examples:
+#   fix(workflow): improve workflow visibility
+#       -> workflow-v2.3.2
+#
+#   fix(release): improve release automation
+#       -> release-v2.1.0
 
 on:
   workflow_call:
     inputs:
+
+      # -----------------------------------------------------------------------
+      # Release configuration
+      # -----------------------------------------------------------------------
       tag_prefix:
-        description: "Prefix for the release tag"
+        description: "Prefix for the release tag, e.g. workflow-v or release-v"
         required: false
         type: string
         default: "v"
 
       scope:
-        description: "Conventional commit scope, e.g. compute. Empty = repo-wide."
+        description: "Conventional Commit scope for this release stream"
         required: false
         type: string
         default: ""
@@ -25,7 +41,7 @@ on:
         default: "0.1.0"
 
       bump_override:
-        description: "Force version bump"
+        description: "Force version bump: auto | major | minor | patch"
         required: false
         type: string
         default: "auto"
@@ -49,48 +65,69 @@ on:
         default: false
 
       target_commitish:
-        description: "Branch/SHA the release should target"
+        description: "Branch or SHA the release should target"
         required: false
         type: string
         default: ""
 
+    # -------------------------------------------------------------------------
+    # Outputs
+    # -------------------------------------------------------------------------
     outputs:
       released_version:
+        description: "Released semantic version"
         value: ${{ jobs.release.outputs.released_version }}
 
       released_tag:
+        description: "Released Git tag"
         value: ${{ jobs.release.outputs.released_tag }}
 
       bump_type:
+        description: "Version bump type"
         value: ${{ jobs.version.outputs.bump_type }}
 
+
+# -----------------------------------------------------------------------------
+# Permissions
+# -----------------------------------------------------------------------------
 permissions:
   contents: write
   pull-requests: read
 
+
+# -----------------------------------------------------------------------------
+# Concurrency
+# -----------------------------------------------------------------------------
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag_prefix }}
   cancel-in-progress: false
 
+
 jobs:
 
-  # ---------------------------------------------------------
+  # ============================================================================
   # Calculate next version
-  # ---------------------------------------------------------
+  # ============================================================================
   version:
+    name: Calculate Version
     uses: ./.github/workflows/version.yml
+
     with:
       tag_prefix: ${{ inputs.tag_prefix }}
       scope: ${{ inputs.scope }}
       initial_version: ${{ inputs.initial_version }}
       bump_override: ${{ inputs.bump_override }}
 
-  # ---------------------------------------------------------
+
+  # ============================================================================
   # Create tag and GitHub Release
-  # ---------------------------------------------------------
+  # ============================================================================
   release:
-    name: Release
+    name: Create ${{ inputs.tag_prefix }} Release
     needs: version
+
+    # Only create a release when a releasable commit exists
+    # for the requested scope.
     if: needs.version.outputs.has_changes == 'true'
 
     runs-on: ubuntu-latest
@@ -101,25 +138,27 @@ jobs:
 
     steps:
 
-      # -----------------------------------------------------
-      # Checkout repository
-      # -----------------------------------------------------
-      - name: Checkout
+      # -------------------------------------------------------------------------
+      # Checkout
+      # -------------------------------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
-      # -----------------------------------------------------
+
+      # -------------------------------------------------------------------------
       # Configure Git
-      # -----------------------------------------------------
-      - name: Configure git identity
+      # -------------------------------------------------------------------------
+      - name: Configure Git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # -----------------------------------------------------
+
+      # -------------------------------------------------------------------------
       # Create annotated tag
-      # -----------------------------------------------------
+      # -------------------------------------------------------------------------
       - name: Create annotated tag
         id: tag
         shell: bash
@@ -134,115 +173,149 @@ jobs:
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
 
+          echo "::group::Release Information"
+          echo "Scope       : ${{ inputs.scope || 'repo-wide' }}"
+          echo "Tag prefix  : ${{ inputs.tag_prefix }}"
+          echo "Bump type   : $BUMP_TYPE"
+          echo "Version     : $NEXT_VERSION"
+          echo "Tag         : $NEXT_TAG"
+          echo "::endgroup::"
+
           if [[ "$DRY_RUN" == "true" ]]; then
-            echo "::notice::Dry run - would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
+            echo "::notice::Dry run - tag $NEXT_TAG would be created."
             exit 0
           fi
 
           git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
           git push origin "$NEXT_TAG"
 
-      # -----------------------------------------------------
-      # Generate GitHub release notes
-      #
-      # GitHub generates these from merged PRs rather than
-      # listing every individual commit.
-      # -----------------------------------------------------
-      - name: Generate PR-based release notes
+
+      # -------------------------------------------------------------------------
+      # Find triggering PR
+      # -------------------------------------------------------------------------
+      - name: Find triggering pull request
+        if: inputs.dry_run == false
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          PR=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
+            --jq '
+              .[]
+              | select(.merged_at != null)
+              | {
+                  number,
+                  title,
+                  author: .user.login,
+                  url: .html_url
+                }
+            ' \
+            | jq -s '.[0] // empty')
+
+          if [[ -z "$PR" ]]; then
+            echo "::error::No merged pull request found for commit ${SHA}."
+            exit 1
+          fi
+
+          PR_NUMBER=$(echo "$PR" | jq -r '.number')
+          PR_TITLE=$(echo "$PR" | jq -r '.title')
+          PR_AUTHOR=$(echo "$PR" | jq -r '.author')
+          PR_URL=$(echo "$PR" | jq -r '.url')
+
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "title=$PR_TITLE" >> "$GITHUB_OUTPUT"
+          echo "author=$PR_AUTHOR" >> "$GITHUB_OUTPUT"
+          echo "url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+          echo "::notice::Release triggered by PR #${PR_NUMBER}: ${PR_TITLE}"
+
+
+      # -------------------------------------------------------------------------
+      # Generate release notes
+      # -------------------------------------------------------------------------
+      - name: Generate release notes
         if: inputs.dry_run == false
         id: changelog
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          SCOPE: ${{ inputs.scope }}
         run: |
           set -euo pipefail
 
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
-
-          if [[ -n "$PREVIOUS_TAG" ]]; then
-            RANGE="${PREVIOUS_TAG}..HEAD"
-          else
-            RANGE="HEAD"
-          fi
-
-          PRS_FILE="$RUNNER_TEMP/prs.json"
-
-          git log "$RANGE" --format="%H" --no-merges |
-          while read -r SHA; do
-            gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
-              --jq '.[] | select(.merged_at != null) |
-              {number, title, author: .user.login}'
-          done |
-          jq -s 'unique_by(.number)' > "$PRS_FILE"
-
           {
-            echo "## What's Changed"
+            echo "## Changes"
             echo
-
-            for TYPE in feat fix docs chore; do
-              case "$TYPE" in
-                feat)  HEADER="### 🚀 Features" ;;
-                fix)   HEADER="### 🐛 Bug Fixes" ;;
-                docs)  HEADER="### 📚 Documentation" ;;
-                chore) HEADER="### 🔧 Maintenance" ;;
-              esac
-
-              ITEMS=$(jq -r --arg type "$TYPE" '
-                .[]
-                | select(.title | test("^" + $type + "(\\([^)]*\\))?!?:"))
-                | "- " +
-                  (.title
-                    | sub("^[a-zA-Z]+(\\([^)]*\\))?!?:[[:space:]]*"; "")
-                    | .[0:1] | ascii_upcase) +
-                  (.title
-                    | sub("^[a-zA-Z]+(\\([^)]*\\))?!?:[[:space:]]*"; "")
-                    | .[1:]) +
-                  " (#\(.number)) by @\(.author)"
-              ' "$PRS_FILE")
-
-              if [[ -n "$ITEMS" ]]; then
-                echo "$HEADER"
-                echo
-                echo "$ITEMS"
-                echo
-              fi
-            done
-
+            echo "- ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL})) by @${PR_AUTHOR}"
+            echo
+            echo "### Release Information"
+            echo
+            echo "- Scope: \`${SCOPE:-repo-wide}\`"
+            echo "- Tag: \`${TAG}\`"
           } > "$RUNNER_TEMP/release-notes.md"
 
-          {
-            echo "file=$RUNNER_TEMP/release-notes.md"
-          } >> "$GITHUB_OUTPUT"
+          echo "file=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
 
 
-
-
-      # -----------------------------------------------------
+      # -------------------------------------------------------------------------
       # Create GitHub Release
-      # -----------------------------------------------------
+      # -------------------------------------------------------------------------
       - name: Create GitHub Release
         if: inputs.dry_run == false
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
           NOTES_FILE: ${{ steps.changelog.outputs.file }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          TARGET: ${{ inputs.target_commitish }}
         run: |
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file "$NOTES_FILE"
+          set -euo pipefail
 
-      # -----------------------------------------------------
+          ARGS=(
+            "$TAG"
+            --title "$TAG"
+            --notes-file "$NOTES_FILE"
+          )
+
+          if [[ "$DRAFT" == "true" ]]; then
+            ARGS+=(--draft)
+          fi
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+
+          if [[ -n "$TARGET" ]]; then
+            ARGS+=(--target "$TARGET")
+          fi
+
+          gh release create "${ARGS[@]}"
+
+
+      # -------------------------------------------------------------------------
       # Summary
-      # -----------------------------------------------------
-      - name: Summary
+      # -------------------------------------------------------------------------
+      - name: Release summary
         if: always()
         run: |
           {
-            echo "### Release Summary"
+            echo "## Release Summary"
+            echo
             echo "- Scope: \`${{ inputs.scope || 'repo-wide' }}\`"
             echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
+            echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
             echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- Triggering PR: #${{ steps.pr.outputs.number || 'N/A' }}"
             echo "- Dry run: \`${{ inputs.dry_run }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

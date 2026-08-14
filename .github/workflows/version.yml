@@ -2,13 +2,22 @@ name: release-version
 
 # Reusable workflow for calculating the next semantic version.
 #
-# Versioning is based on Conventional Commits:
-#   feat:      -> minor
-#   fix:       -> patch
-#   BREAKING:  -> major
+# Release versioning is based on the Conventional Commit associated
+# with the PR that triggered the workflow.
 #
-# For monorepos, use the "scope" input to calculate versions
-# independently for a component, e.g. feat(compute): ...
+# Examples:
+#
+#   fix(workflow): improve workflow visibility
+#       -> workflow-v2.3.2
+#
+#   feat(workflow): add release automation
+#       -> workflow-v2.4.0
+#
+#   fix(release): improve release notes
+#       -> release-v2.1.1
+#
+# Only the PR that triggered the release is evaluated.
+# This ensures one PR results in one release.
 
 on:
   workflow_call:
@@ -19,19 +28,19 @@ on:
     inputs:
 
       tag_prefix:
-        description: "Git tag prefix, e.g. 'v' for v1.2.3"
+        description: "Git tag prefix, e.g. 'workflow-v' or 'release-v'"
         required: false
         type: string
         default: "v"
 
       scope:
-        description: "Conventional Commit scope for this component. Empty = repo-wide."
+        description: "Conventional Commit scope for this release stream"
         required: false
         type: string
         default: ""
 
       initial_version:
-        description: "Baseline version when no previous release tag exists."
+        description: "Baseline version when no previous release tag exists"
         required: false
         type: string
         default: "0.1.0"
@@ -48,23 +57,23 @@ on:
     outputs:
 
       current_version:
-        description: "Latest released version without tag prefix."
+        description: "Latest released version without tag prefix"
         value: ${{ jobs.compute-version.outputs.current_version }}
 
       next_version:
-        description: "Calculated next version without tag prefix."
+        description: "Calculated next version without tag prefix"
         value: ${{ jobs.compute-version.outputs.next_version }}
 
       next_tag:
-        description: "Calculated next Git tag including prefix."
+        description: "Calculated next Git tag including prefix"
         value: ${{ jobs.compute-version.outputs.next_tag }}
 
       bump_type:
-        description: "Version bump type: major | minor | patch | none."
+        description: "Version bump type: major | minor | patch | none"
         value: ${{ jobs.compute-version.outputs.bump_type }}
 
       has_changes:
-        description: "Whether releasable commits were detected."
+        description: "Whether the triggering PR requires a release"
         value: ${{ jobs.compute-version.outputs.has_changes }}
 
 
@@ -102,31 +111,44 @@ jobs:
         with:
           fetch-depth: 0
 
+
       # -------------------------------------------------------------------------
-      # Version calculation
+      # Calculate semantic version
       # -------------------------------------------------------------------------
       - name: Calculate semantic version
         id: semver
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG_PREFIX: ${{ inputs.tag_prefix }}
           SCOPE: ${{ inputs.scope }}
           INITIAL_VERSION: ${{ inputs.initial_version }}
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
+          SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
+          # ---------------------------------------------------------------------
+          # Release configuration
+          # ---------------------------------------------------------------------
           echo "::group::Release Configuration"
-          echo "Tag prefix       : ${TAG_PREFIX}"
-          echo "Component scope  : ${SCOPE:-<repo-wide>}"
-          echo "Initial version  : ${INITIAL_VERSION}"
-          echo "Bump override    : ${BUMP_OVERRIDE}"
+          echo "Tag prefix      : ${TAG_PREFIX}"
+          echo "Release scope   : ${SCOPE:-<repo-wide>}"
+          echo "Initial version : ${INITIAL_VERSION}"
+          echo "Bump override   : ${BUMP_OVERRIDE}"
+          echo "Commit SHA      : ${SHA}"
+          echo "Event           : ${EVENT_NAME}"
           echo "::endgroup::"
+
 
           # ---------------------------------------------------------------------
           # Determine current version
           # ---------------------------------------------------------------------
-          LAST_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1 || true)
+          LAST_TAG=$(
+            git tag --list "${TAG_PREFIX}*" --sort=-v:refname |
+            head -n1 || true
+          )
 
           if [[ -z "$LAST_TAG" ]]; then
             CURRENT_VERSION="$INITIAL_VERSION"
@@ -141,16 +163,49 @@ jobs:
           echo "Current version : ${CURRENT_VERSION}"
           echo "::endgroup::"
 
-          # ---------------------------------------------------------------------
-          # Collect commits since previous release
-          # ---------------------------------------------------------------------
-          RANGE="HEAD"
 
-          if [[ -n "$LAST_TAG" ]]; then
-            RANGE="${LAST_TAG}..HEAD"
+          # ---------------------------------------------------------------------
+          # Find the PR associated with the commit that triggered the workflow
+          # ---------------------------------------------------------------------
+          PR_TITLE=""
+
+          PR=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
+            --jq '
+              .[]
+              | select(.merged_at != null)
+              | {
+                  number,
+                  title,
+                  author: .user.login
+                }
+            ' \
+            | jq -s '.[0] // empty')
+
+          if [[ -n "$PR" ]]; then
+
+            PR_NUMBER=$(echo "$PR" | jq -r '.number')
+            PR_TITLE=$(echo "$PR" | jq -r '.title')
+            PR_AUTHOR=$(echo "$PR" | jq -r '.author')
+
+            echo "::group::Triggering Pull Request"
+            echo "PR number : #${PR_NUMBER}"
+            echo "PR title  : ${PR_TITLE}"
+            echo "PR author : @${PR_AUTHOR}"
+            echo "::endgroup::"
+
+          else
+
+            echo "::warning::No merged pull request found for commit ${SHA}."
+
+            # Manual workflow execution may not have an associated PR.
+            # Fall back to the commit message.
+            PR_TITLE=$(git log -1 --pretty=format:"%s")
+
+            echo "::notice::Using commit message: ${PR_TITLE}"
+
           fi
 
-          COMMITS=$(git log "$RANGE" --pretty=format:"%s%n%b%n---")
 
           # ---------------------------------------------------------------------
           # Build Conventional Commit scope pattern
@@ -161,42 +216,53 @@ jobs:
             SCOPE_RE="(\\([^)]*\\))?"
           fi
 
-          HAS_CHANGES="false"
-          BUMP="none"
 
           # ---------------------------------------------------------------------
           # Determine version bump
+          #
+          # Only the triggering PR / commit is evaluated.
           # ---------------------------------------------------------------------
+          HAS_CHANGES="false"
+          BUMP="none"
+
           if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
 
             BUMP="$BUMP_OVERRIDE"
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qiE \
-            "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
+          elif echo "$PR_TITLE" | grep -qiE \
+            "^[a-zA-Z]+${SCOPE_RE}!:"; then
 
             BUMP="major"
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qE \
+          elif echo "$PR_TITLE" | grep -qiE \
+            "^BREAKING CHANGE:"; then
+
+            BUMP="major"
+            HAS_CHANGES="true"
+
+          elif echo "$PR_TITLE" | grep -qE \
             "^feat${SCOPE_RE}:"; then
 
             BUMP="minor"
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qE \
+          elif echo "$PR_TITLE" | grep -qE \
             "^fix${SCOPE_RE}:"; then
 
             BUMP="patch"
             HAS_CHANGES="true"
+
           fi
+
 
           # ---------------------------------------------------------------------
           # No release required
           # ---------------------------------------------------------------------
           if [[ "$HAS_CHANGES" == "false" ]]; then
 
-            echo "::notice::No releasable commits found for scope '${SCOPE:-<repo-wide>}'."
+            echo "::notice::No releasable Conventional Commit found for scope '${SCOPE:-<repo-wide>}' in the triggering PR."
 
             {
               echo "has_changes=false"
@@ -208,6 +274,7 @@ jobs:
 
             exit 0
           fi
+
 
           # ---------------------------------------------------------------------
           # Calculate next version
@@ -236,17 +303,23 @@ jobs:
           NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           NEXT_TAG="${TAG_PREFIX}${NEXT_VERSION}"
 
+
           # ---------------------------------------------------------------------
-          # Release summary
+          # Release calculation summary
           # ---------------------------------------------------------------------
           echo "::group::Release Calculation"
-          echo "Component scope : ${SCOPE:-<repo-wide>}"
+          echo "PR title        : ${PR_TITLE}"
+          echo "Release scope   : ${SCOPE:-<repo-wide>}"
           echo "Bump type       : ${BUMP}"
           echo "Current version : ${CURRENT_VERSION}"
           echo "Next version    : ${NEXT_VERSION}"
           echo "Next tag        : ${NEXT_TAG}"
           echo "::endgroup::"
 
+
+          # ---------------------------------------------------------------------
+          # Workflow outputs
+          # ---------------------------------------------------------------------
           {
             echo "has_changes=true"
             echo "current_version=$CURRENT_VERSION"
