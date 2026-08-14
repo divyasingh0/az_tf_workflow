@@ -148,63 +148,90 @@ jobs:
       # GitHub generates these from merged PRs rather than
       # listing every individual commit.
       # -----------------------------------------------------
-      - name: Generate release notes
+      - name: Generate PR-based release notes
         if: inputs.dry_run == false
         id: changelog
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
-          TARGET: ${{ inputs.target_commitish }}
         run: |
           set -euo pipefail
 
-          ARGS=(
-            --method POST
-            "/repos/${GITHUB_REPOSITORY}/releases/generate-notes"
-            -f "tag_name=$TAG"
-          )
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
 
-          if [[ -n "$TARGET" ]]; then
-            ARGS+=(-f "target_commitish=$TARGET")
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            RANGE="${PREVIOUS_TAG}..HEAD"
+          else
+            RANGE="HEAD"
           fi
 
-          gh api "${ARGS[@]}" > "$RUNNER_TEMP/release-notes.json"
+          PRS_FILE="$RUNNER_TEMP/prs.json"
 
-          jq -r '.body' "$RUNNER_TEMP/release-notes.json" \
-            > "$RUNNER_TEMP/release-notes.md"
+          git log "$RANGE" --format="%H" --no-merges |
+          while read -r SHA; do
+            gh api "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
+              --jq '.[] | select(.merged_at != null) |
+              {number, title, author: .user.login}'
+          done |
+          jq -s 'unique_by(.number)' > "$PRS_FILE"
 
           {
-            echo "changelog<<RELEASE_NOTES_EOF"
-            cat "$RUNNER_TEMP/release-notes.md"
+            echo "## What's Changed"
             echo
-            echo "RELEASE_NOTES_EOF"
+
+            for TYPE in feat fix docs chore; do
+              case "$TYPE" in
+                feat)  HEADER="### 🚀 Features" ;;
+                fix)   HEADER="### 🐛 Bug Fixes" ;;
+                docs)  HEADER="### 📚 Documentation" ;;
+                chore) HEADER="### 🔧 Maintenance" ;;
+              esac
+
+              ITEMS=$(jq -r --arg type "$TYPE" '
+                .[]
+                | select(.title | test("^" + $type + "(\\([^)]*\\))?!?:"))
+                | "- " +
+                  (.title
+                    | sub("^[a-zA-Z]+(\\([^)]*\\))?!?:[[:space:]]*"; "")
+                    | .[0:1] | ascii_upcase) +
+                  (.title
+                    | sub("^[a-zA-Z]+(\\([^)]*\\))?!?:[[:space:]]*"; "")
+                    | .[1:]) +
+                  " (#\(.number)) by @\(.author)"
+              ' "$PRS_FILE")
+
+              if [[ -n "$ITEMS" ]]; then
+                echo "$HEADER"
+                echo
+                echo "$ITEMS"
+                echo
+              fi
+            done
+
+          } > "$RUNNER_TEMP/release-notes.md"
+
+          {
+            echo "file=$RUNNER_TEMP/release-notes.md"
           } >> "$GITHUB_OUTPUT"
+
+
+
 
       # -----------------------------------------------------
       # Create GitHub Release
       # -----------------------------------------------------
       - name: Create GitHub Release
         if: inputs.dry_run == false
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
-          NOTES: ${{ steps.changelog.outputs.changelog }}
-          DRAFT: ${{ inputs.draft }}
-          PRERELEASE: ${{ inputs.prerelease }}
+          NOTES_FILE: ${{ steps.changelog.outputs.file }}
         run: |
-          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "$NOTES_FILE"
 
-          ARGS=(
-            --title "$TAG"
-            --notes "$NOTES"
-          )
-
-          [[ "$DRAFT" == "true" ]] && ARGS+=(--draft)
-          [[ "$PRERELEASE" == "true" ]] && ARGS+=(--prerelease)
-
-          gh release create "$TAG" "${ARGS[@]}"
 
       # -----------------------------------------------------
       # Summary
