@@ -51,9 +51,9 @@ env:
 #   group: terraform-${{ inputs.application || env.TEST_APPLICATION }}-${{ inputs.environment || env.TEST_ENVIRONMENT }}
 #   cancel-in-progress: false
 
-concurrency:
-  group: terraform-${{ inputs.environment || env.TEST_ENVIRONMENT }}-${{ inputs.environment || env.TEST_ENVIRONMENT }}
-  cancel-in-progress: false
+# concurrency:
+#   group: terraform-${{ inputs.environment || env.TEST_ENVIRONMENT }}-${{ inputs.environment || env.TEST_ENVIRONMENT }}
+#   cancel-in-progress: false
 
 jobs:
 
