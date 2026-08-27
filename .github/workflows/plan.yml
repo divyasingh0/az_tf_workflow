@@ -17,13 +17,13 @@ env:
   ENVIRONMENT: dev
   WORKING_DIRECTORY: .
 
-# ---------------------------------------------------------------------------
-# Prevent overlapping Terraform operations for the same environment.
-# Existing run is allowed to finish.
-# ---------------------------------------------------------------------------
-concurrency:
-  group: terraform-${{ github.repository }}-${{ env.ENVIRONMENT }}
-  cancel-in-progress: false
+# # ---------------------------------------------------------------------------
+# # Prevent overlapping Terraform operations for the same environment.
+# # Existing run is allowed to finish.
+# # ---------------------------------------------------------------------------
+# concurrency:
+#   group: terraform-${{ github.repository }}-${{ env.ENVIRONMENT }}
+#   cancel-in-progress: false
 
 jobs:
 
