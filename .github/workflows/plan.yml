@@ -1,177 +1,373 @@
-name: Reusable - Terraform Plan
 
-# on:
-
-
-
+name: Terraform PR Workflow
 on:
   # ---------------------------------------------------------------------------
   # Automatic release
   # ---------------------------------------------------------------------------
-  push:
+  pull_request:
     branches:
       - main
 
-  # workflow_call:
-  #   inputs:
-  #     application:
-  #       required: true
-  #       type: string
-  #     environment:
-  #       required: true
-  #       type: string
-  #     working_directory:
-  #       required: true
-  #       type: string
-  #     check_only:
-  #       required: false
-  #       type: boolean
-  #       default: false
-  #     terraform_version:
-  #       required: false
-  #       type: string
-  #       default: "1.9.5"
-  #     azure_client_id:
-  #       required: true
-  #       type: string
-  #     azure_tenant_id:
-  #       required: true
-  #       type: string
-  #     azure_subscription_id:
-  #       required: true
-  #       type: string
-  #     backend_resource_group:
-  #       required: true
-  #       type: string
-  #     backend_storage_account:
-  #       required: true
-  #       type: string
-  #     backend_container:
-  #       required: true
-  #       type: string
-  #     backend_key:
-  #       required: true
-  #       type: string
-  #     transport_retention_days:
-  #       description: "How long the pre-merge plan artifact survives. Must comfortably cover your expected PR review/approval SLA — if a PR takes longer to merge than this, the plan expires before it can be promoted."
-  #       required: false
-  #       type: number
-  #       default: 14
+
+# on:
+#   workflow_call:
+#     inputs:
+#       application:
+#         description: "Terraform application (merch, storeapps, edna)"
+#         required: true
+#         type: string
+
+#       environment:
+#         description: "Terraform environment (dev, test, prod)"
+#         required: true
+#         type: string
+
+#       working_directory:
+#         description: "Terraform working directory"
+#         required: false
+#         default: .
+#         type: string
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
+
+# Remove this section when workflow_call is enabled.
+# ---------------------------------------------------------------------------
+env:
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+
+  
+  TEST_ENVIRONMENT: dev
+
+# ---------------------------------------------------------------------------
+# Prevent overlapping Terraform operations against the same environment.
+#
+# cancel-in-progress: false means an existing run is allowed to finish.
+# A new run waits instead of cancelling the previous Terraform operation.
+# ---------------------------------------------------------------------------
+# concurrency:
+#   group: terraform-${{ inputs.application || env.TEST_APPLICATION }}-${{ inputs.environment || env.TEST_ENVIRONMENT }}
+#   cancel-in-progress: false
 
 concurrency:
-  group: terraform-plan-${{ inputs.application }}-${{ inputs.environment }}
+  group: terraform-${{ inputs.environment || env.TEST_ENVIRONMENT }}-${{ inputs.environment || env.TEST_ENVIRONMENT }}
   cancel-in-progress: false
 
 jobs:
-  plan:
-    name: Terraform Plan (${{ inputs.application }} / ${{ inputs.environment }})
+
+  # ---------------------------------------------------------------------------
+  # Validate
+  # ---------------------------------------------------------------------------
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
+    environment: ${{ inputs.environment }}
+
     defaults:
       run:
         working-directory: ${{ inputs.working_directory }}
-        shell: bash
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Read Terraform Version
+        id: tf_version
+        run: echo "version=$(cat .terraform-version)" >> "$GITHUB_OUTPUT"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ inputs.terraform_version }}
-          terraform_wrapper: false
+          terraform_version: ${{ steps.tf_version.outputs.version }}
 
-      - name: Azure login (OIDC, plan-scoped identity)
+      - name: Validate Environment Files
+        run: |
+          test -f environment/${{ inputs.environment }}/backend.tfvars
+          test -f environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars
+
+      - name: Azure Login
         uses: azure/login@v2
         with:
-          client-id: ${{ inputs.azure_client_id }}
-          tenant-id: ${{ inputs.azure_tenant_id }}
-          subscription-id: ${{ inputs.azure_subscription_id }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Terraform format check
+      - name: Terraform Init
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+
+          terraform init \
+            -backend-config=environment/${{ inputs.environment }}/backend.tfvars \
+            -input=false
+
+      - name: Terraform FMT
         run: terraform fmt -check -recursive
 
-      - name: Terraform init
+      - name: Terraform Validate
+        run: terraform validate
+
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan
+  # ---------------------------------------------------------------------------
+  plan:
+    needs: validate
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read Terraform Version
+        id: tf_version
+        run: echo "version=$(cat .terraform-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.tf_version.outputs.version }}
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
         run: |
-          terraform init -input=false \
-            -backend-config="resource_group_name=${{ inputs.backend_resource_group }}" \
-            -backend-config="storage_account_name=${{ inputs.backend_storage_account }}" \
-            -backend-config="container_name=${{ inputs.backend_container }}" \
-            -backend-config="key=${{ inputs.backend_key }}"
+          git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
 
-      - name: Terraform validate
-        run: terraform validate -no-color
+          terraform init \
+            -backend-config=environment/${{ inputs.environment }}/backend.tfvars \
+            -input=false
 
-      - name: Stop here (check-only mode)
-        if: ${{ inputs.check_only }}
-        run: echo "check_only=true — fmt and validate passed. Skipping plan."
+      # -----------------------------------------------------------------------
+      # Optional Checkov
+      # -----------------------------------------------------------------------
+      # - name: Install Checkov
+      #   run: |
+      #     python -m pip install --upgrade pip
+      #     pip install checkov
 
-      - name: Terraform plan
-        if: ${{ !inputs.check_only }}
-        id: plan
-        run: terraform plan -input=false -no-color -out=tfplan
+      # - name: Run Checkov Scan
+      #   run: |
+      #     checkov \
+      #       -d . \
+      #       --framework terraform \
+      #       --download-external-modules true \
+      #       -o sarif \
+      #       --output-file-path checkov.sarif
 
-      - name: Render plan JSON and text summary
-        if: ${{ !inputs.check_only }}
+      # -----------------------------------------------------------------------
+      # Workflow Metadata
+      # -----------------------------------------------------------------------
+      - name: Generate Workflow Metadata
         run: |
-          terraform show -json tfplan > plan.json
-          terraform show -no-color tfplan > plan.txt
-
-      - name: Generate metadata.json
-        if: ${{ !inputs.check_only }}
-        id: meta
-        run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          cat <<EOF > metadata.json
+          cat > workflow.auto.tfvars.json << EOF
           {
-            "repository": "${{ github.repository }}",
-            "pull_request_number": "${{ github.event.pull_request.number }}",
-            "commit_sha": "${{ github.sha }}",
-            "short_sha": "${SHORT_SHA}",
+            "workflow_tags": {
+              "repository": "${GITHUB_REPOSITORY}"
+            }
+          }
+          EOF
+
+      # -----------------------------------------------------------------------
+      # Terraform Plan
+      # -----------------------------------------------------------------------
+      - name: Terraform Plan
+        run: |
+          terraform plan \
+            -var-file=environment/${{ inputs.environment }}/${{ inputs.environment }}.tfvars \
+            -out=tfplan
+
+      # -----------------------------------------------------------------------
+      # Human-readable plan
+      # -----------------------------------------------------------------------
+      - name: Generate Plan Output
+        run: |
+          terraform show -no-color tfplan > tfplan.txt
+
+      # -----------------------------------------------------------------------
+      # Plan Metadata
+      # -----------------------------------------------------------------------
+      - name: Generate Plan Metadata
+        run: |
+          cat > plan-metadata.json << EOF
+          {
+            "repository": "${GITHUB_REPOSITORY}",
             "application": "${{ inputs.application }}",
             "environment": "${{ inputs.environment }}",
-            "terraform_version": "${{ inputs.terraform_version }}",
-            "run_id": "${{ github.run_id }}",
-            "actor": "${{ github.actor }}",
+            "commit_sha": "${GITHUB_SHA}",
+            "terraform_version": "${{ steps.tf_version.outputs.version }}",
+            "workflow_run_id": "${GITHUB_RUN_ID}",
+            "workflow_run_number": "${GITHUB_RUN_NUMBER}",
             "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           EOF
 
-      - name: Upload transport artifact (pre-merge — NOT yet the system of record)
-        if: ${{ !inputs.check_only }}
+      # -----------------------------------------------------------------------
+      # Plan Integrity
+      # -----------------------------------------------------------------------
+      - name: Generate Plan Checksum
+        run: |
+          sha256sum tfplan > tfplan.sha256
+
+      # -----------------------------------------------------------------------
+      # Prepare candidate artifact
+      # -----------------------------------------------------------------------
+      - name: Prepare Plan Artifact
+        run: |
+          mkdir -p terraform-plan-artifact
+
+          cp tfplan terraform-plan-artifact/
+          cp tfplan.txt terraform-plan-artifact/
+          cp tfplan.sha256 terraform-plan-artifact/
+          cp plan-metadata.json terraform-plan-artifact/
+
+      # -----------------------------------------------------------------------
+      # Candidate artifact remains in GitHub Actions storage.
+      #
+      # It is NOT uploaded to Azure Storage at this stage.
+      # -----------------------------------------------------------------------
+      - name: Upload Candidate Plan Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan-${{ inputs.application }}-${{ inputs.environment }}-${{ github.run_id }}
-          path: |
-            ${{ inputs.working_directory }}/tfplan
-            ${{ inputs.working_directory }}/metadata.json
-            ${{ inputs.working_directory }}/plan.json
-          retention-days: ${{ inputs.transport_retention_days }}
+          name: terraform-plan-${{ inputs.application }}-${{ inputs.environment }}-${{ github.sha }}
+          path: terraform-plan-artifact/
+          retention-days: 30
           if-no-files-found: error
-        # NOTE: This plan is NOT copied to Azure Storage here. It only becomes
-        # permanent, promoted, and eligible for deployment if and when this PR
-        # is actually merged — see reusable-promote-on-merge.yml.
 
-      - name: Comment plan summary on PR
-        if: ${{ !inputs.check_only && github.event_name == 'pull_request' }}
-        uses: actions/github-script@v7
+
+  # ---------------------------------------------------------------------------
+  # Promote approved artifact to Azure Blob Storage
+  #
+  # Configure required reviewers on the GitHub Environment, especially prod.
+  # ---------------------------------------------------------------------------
+  promote:
+    needs: plan
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: ${{ inputs.environment }}
+
+    steps:
+
+      # -----------------------------------------------------------------------
+      # Download candidate artifact from GitHub
+      # -----------------------------------------------------------------------
+      - name: Download Candidate Plan
+        uses: actions/download-artifact@v4
         with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const planPath = path.join(process.env.GITHUB_WORKSPACE, '${{ inputs.working_directory }}', 'plan.txt');
-            let plan = fs.readFileSync(planPath, 'utf8');
-            if (plan.length > 60000) plan = plan.slice(0, 60000) + '\n... (truncated)';
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `### Terraform Plan — \`${{ inputs.application }}\` / \`${{ inputs.environment }}\`\n\nThis plan is held as a temporary build artifact and will only be promoted to permanent, deployable storage if this PR is approved and merged.\n\n<details><summary>Show plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n</details>`
-            });
+          name: terraform-plan-${{ inputs.application }}-${{ inputs.environment }}-${{ github.sha }}
+          path: terraform-plan
+
+      # -----------------------------------------------------------------------
+      # Verify plan integrity
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Checksum
+        working-directory: terraform-plan
+        run: |
+          sha256sum -c tfplan.sha256
+
+      # -----------------------------------------------------------------------
+      # Verify plan metadata
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Metadata
+        working-directory: terraform-plan
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_APPLICATION: ${{ inputs.application }}
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          jq -e \
+            --arg repo "$EXPECTED_REPOSITORY" \
+            --arg app "$EXPECTED_APPLICATION" \
+            --arg env "$EXPECTED_ENVIRONMENT" \
+            --arg sha "$EXPECTED_SHA" \
+            '
+            .repository == $repo and
+            .application == $app and
+            .environment == $env and
+            .commit_sha == $sha
+            ' plan-metadata.json
+
+      # -----------------------------------------------------------------------
+      # Azure Login
+      # -----------------------------------------------------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # -----------------------------------------------------------------------
+      # Promote ONLY approved artifact
+      #
+      # Storage account:
+      #   TF_ARTIFACT_STORAGE_ACCOUNT
+      #
+      # Containers:
+      #   merch
+      #   storeapps
+      #   edna
+      #
+      # Folder structure:
+      #
+      #   <application>/<environment>/<commit-sha>/
+      #
+      # Example:
+      #
+      #   storeapps/prod/a82f91c6.../
+      # -----------------------------------------------------------------------
+      - name: Promote Approved Plan
+        env:
+          STORAGE_ACCOUNT: ${{ secrets.TF_ARTIFACT_STORAGE_ACCOUNT }}
+          CONTAINER: ${{ inputs.application }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPOSITORY: ${{ github.event.repository.name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          az storage container create \
+            --name "$CONTAINER" \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login
+
+          az storage blob upload-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --destination "$CONTAINER/$ENVIRONMENT/$REPOSITORY/$COMMIT_SHA" \
+            --source terraform-plan \
+            --auth-mode login \
+            --overwrite false
+
+      # -----------------------------------------------------------------------
+      # Deployment summary
+      # -----------------------------------------------------------------------
+      - name: Generate Deployment Summary
+        env:
+          APPLICATION: ${{ inputs.application }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          REPOSITORY: ${{ github.event.repository.name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "### Terraform Plan Promoted" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application: $APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Repository: $REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit SHA: $COMMIT_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Container: $APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact Path: $ENVIRONMENT/$REPOSITORY/$COMMIT_SHA" >> "$GITHUB_STEP_SUMMARY"
