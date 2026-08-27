@@ -1,0 +1,169 @@
+name: Reusable - Terraform Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: environment
+        required: true
+      commit_sha:
+        description: "Optional — exact short commit SHA to deploy. Leave blank to deploy the latest approved plan."
+        required: false
+        type: string
+ 
+
+# on:
+#   workflow_call:
+#     inputs:
+#       application:
+#         required: true
+#         type: string
+#       environment:
+#         required: true
+#         type: string
+#       working_directory:
+#         required: true
+#         type: string
+#       commit_sha:
+#         required: false
+#         type: string
+#         default: ""
+#       terraform_version:
+#         required: false
+#         type: string
+#         default: "1.9.5"
+#       azure_client_id:
+#         required: true
+#         type: string
+#       azure_tenant_id:
+#         required: true
+#         type: string
+#       azure_subscription_id:
+#         required: true
+#         type: string
+#       backend_resource_group:
+#         required: true
+#         type: string
+#       backend_storage_account:
+#         required: true
+#         type: string
+#       backend_container:
+#         required: true
+#         type: string
+#       backend_key:
+#         required: true
+#         type: string
+#       tfplan_storage_account:
+#         required: true
+#         type: string
+#       tfplan_container:
+#         required: false
+#         type: string
+#         default: "tfplans"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-apply-${{ inputs.application }}-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Terraform Apply (${{ inputs.application }} / ${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+        shell: bash
+
+    steps:
+      - name: Azure login (OIDC, apply-scoped identity)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ inputs.azure_client_id }}
+          tenant-id: ${{ inputs.azure_tenant_id }}
+          subscription-id: ${{ inputs.azure_subscription_id }}
+
+      - name: Resolve which commit to deploy
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.commit_sha }}" ]; then
+            echo "sha=${{ inputs.commit_sha }}" >> "$GITHUB_OUTPUT"
+          else
+            az storage blob download \
+              --account-name "${{ inputs.tfplan_storage_account }}" \
+              --container-name "${{ inputs.tfplan_container }}" \
+              --name "${{ inputs.application }}/${{ inputs.environment }}/latest-approved.json" \
+              --file latest-approved.json \
+              --auth-mode login
+            SHA=$(jq -r '.commit_sha' latest-approved.json)
+            echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download plan from central Azure Storage
+        run: |
+          set -euo pipefail
+          SHA="${{ steps.resolve.outputs.sha }}"
+          SRC="${{ inputs.application }}/${{ inputs.environment }}/${SHA}"
+
+          az storage blob download \
+            --account-name "${{ inputs.tfplan_storage_account }}" \
+            --container-name "${{ inputs.tfplan_container }}" \
+            --name "${SRC}/tfplan" --file tfplan --auth-mode login
+
+          az storage blob download \
+            --account-name "${{ inputs.tfplan_storage_account }}" \
+            --container-name "${{ inputs.tfplan_container }}" \
+            --name "${SRC}/metadata.json" --file metadata.json --auth-mode login
+
+      - name: Validate metadata matches deployment intent
+        run: |
+          set -euo pipefail
+          APP=$(jq -r '.application' metadata.json)
+          ENV=$(jq -r '.environment' metadata.json)
+          SHA=$(jq -r '.commit_sha' metadata.json)
+          PR=$(jq -r '.pull_request_number' metadata.json)
+
+          if [ "$APP" != "${{ inputs.application }}" ] || [ "$ENV" != "${{ inputs.environment }}" ]; then
+            echo "::error::metadata mismatch — stored plan is for application=$APP environment=$ENV, but this deployment requested application=${{ inputs.application }} environment=${{ inputs.environment }}. Refusing to apply."
+            exit 1
+          fi
+
+          echo "Deploying commit ${SHA} (originating PR #${PR}) to ${{ inputs.application }}/${{ inputs.environment }}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ inputs.backend_resource_group }}" \
+            -backend-config="storage_account_name=${{ inputs.backend_storage_account }}" \
+            -backend-config="container_name=${{ inputs.backend_container }}" \
+            -backend-config="key=${{ inputs.backend_key }}"
+
+      - name: Terraform apply (exact saved plan — no re-plan)
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Record deployment audit entry
+        if: always()
+        run: |
+          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | app=${{ inputs.application }} env=${{ inputs.environment }} sha=${{ steps.resolve.outputs.sha }} actor=${{ github.actor }} run_id=${{ github.run_id }} status=${{ job.status }}" \
+            | tee -a deployment-audit.log
+
+      - name: Upload audit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-audit-${{ inputs.application }}-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ inputs.working_directory }}/deployment-audit.log
+          retention-days: 90

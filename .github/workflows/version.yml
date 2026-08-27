@@ -17,7 +17,8 @@ name: release-version
 #       -> release-v2.1.1
 #
 # Only the PR that triggered the release is evaluated.
-# This ensures one PR results in one release.
+# This ensures one PR results in exactly one release, on exactly
+# the stream whose scope matches the commit — never more than one.
 
 on:
   workflow_call:
@@ -34,7 +35,7 @@ on:
         default: "v"
 
       scope:
-        description: "Conventional Commit scope for this release stream"
+        description: "Conventional Commit scope for this release stream. Leave empty for a repo-wide stream that only reacts to UNSCOPED commits."
         required: false
         type: string
         default: ""
@@ -134,7 +135,7 @@ jobs:
           # ---------------------------------------------------------------------
           echo "::group::Release Configuration"
           echo "Tag prefix      : ${TAG_PREFIX}"
-          echo "Release scope   : ${SCOPE:-<repo-wide>}"
+          echo "Release scope   : ${SCOPE:-<repo-wide, unscoped commits only>}"
           echo "Initial version : ${INITIAL_VERSION}"
           echo "Bump override   : ${BUMP_OVERRIDE}"
           echo "Commit SHA      : ${SHA}"
@@ -209,18 +210,32 @@ jobs:
 
           # ---------------------------------------------------------------------
           # Build Conventional Commit scope pattern
+          #
+          # IMPORTANT: this must be a STRICT match, not an optional one.
+          #
+          #   - If SCOPE is set (e.g. "workflow"), only commits carrying
+          #     EXACTLY that scope — "fix(workflow): ..." — should match
+          #     this stream.
+          #
+          #   - If SCOPE is empty (a repo-wide stream), only UNSCOPED
+          #     commits — "fix: ..." — should match. It must NOT also
+          #     match "fix(workflow): ..." or "fix(release): ...", or a
+          #     single commit would satisfy two streams at once and
+          #     produce two tags/releases instead of one.
           # ---------------------------------------------------------------------
           if [[ -n "$SCOPE" ]]; then
             SCOPE_RE="\\(${SCOPE}\\)"
           else
-            SCOPE_RE="(\\([^)]*\\))?"
+            SCOPE_RE=""
           fi
 
 
           # ---------------------------------------------------------------------
           # Determine version bump
           #
-          # Only the triggering PR / commit is evaluated.
+          # Only the triggering PR / commit is evaluated, and only against
+          # THIS stream's scope. A commit scoped to a different stream (or
+          # to no stream, for a scoped stream) must never match here.
           # ---------------------------------------------------------------------
           HAS_CHANGES="false"
           BUMP="none"
@@ -236,9 +251,14 @@ jobs:
             BUMP="major"
             HAS_CHANGES="true"
 
-          elif echo "$PR_TITLE" | grep -qiE \
+          elif [[ -z "$SCOPE" ]] && echo "$PR_TITLE" | grep -qiE \
             "^BREAKING CHANGE:"; then
 
+            # A bare, unscoped "BREAKING CHANGE:" title only ever applies
+            # to the repo-wide stream. A scoped stream must see the scope
+            # in the type itself (handled by the "!:" pattern above) —
+            # otherwise a single unscoped breaking-change title would
+            # trigger a major bump on every scoped stream simultaneously.
             BUMP="major"
             HAS_CHANGES="true"
 
