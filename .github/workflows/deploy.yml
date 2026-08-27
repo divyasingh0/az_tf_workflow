@@ -1,169 +1,250 @@
-name: Reusable - Terraform Apply
+name: Terraform Deployment
 
 on:
   workflow_dispatch:
     inputs:
+
       environment:
         description: "Target environment"
-        type: environment
         required: true
-      commit_sha:
-        description: "Optional — exact short commit SHA to deploy. Leave blank to deploy the latest approved plan."
-        required: false
-        type: string
- 
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
 
-# on:
-#   workflow_call:
-#     inputs:
-#       application:
-#         required: true
-#         type: string
-#       environment:
-#         required: true
-#         type: string
-#       working_directory:
-#         required: true
-#         type: string
-#       commit_sha:
-#         required: false
-#         type: string
-#         default: ""
-#       terraform_version:
-#         required: false
-#         type: string
-#         default: "1.9.5"
-#       azure_client_id:
-#         required: true
-#         type: string
-#       azure_tenant_id:
-#         required: true
-#         type: string
-#       azure_subscription_id:
-#         required: true
-#         type: string
-#       backend_resource_group:
-#         required: true
-#         type: string
-#       backend_storage_account:
-#         required: true
-#         type: string
-#       backend_container:
-#         required: true
-#         type: string
-#       backend_key:
-#         required: true
-#         type: string
-#       tfplan_storage_account:
-#         required: true
-#         type: string
-#       tfplan_container:
-#         required: false
-#         type: string
-#         default: "tfplans"
+      commit_sha:
+        description: "Approved Terraform Plan Commit SHA"
+        required: true
+        type: string
 
 permissions:
   id-token: write
   contents: read
 
-concurrency:
-  group: terraform-apply-${{ inputs.application }}-${{ inputs.environment }}
-  cancel-in-progress: false
+env:
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+  WORKING_DIRECTORY: .
 
 jobs:
-  apply:
-    name: Terraform Apply (${{ inputs.application }} / ${{ inputs.environment }})
+
+  # ===========================================================================
+  # DEPLOY APPROVED PLAN
+  # ===========================================================================
+  deploy:
+    name: Deploy Approved Terraform Plan
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ inputs.environment }}
+
+    environment:
+      name: ${{ inputs.environment }}
+
     defaults:
       run:
-        working-directory: ${{ inputs.working_directory }}
-        shell: bash
+        working-directory: ${{ env.WORKING_DIRECTORY }}
 
     steps:
-      - name: Azure login (OIDC, apply-scoped identity)
-        uses: azure/login@v2
+
+      # -----------------------------------------------------------------------
+      # Determine Application from Repository
+      # -----------------------------------------------------------------------
+      - name: Determine Application
+        id: application
+        env:
+          REPOSITORY: ${{ github.event.repository.name }}
+        run: |
+
+          case "$REPOSITORY" in
+            *merch*)
+              APPLICATION="merch"
+              ;;
+            *storeapps*)
+              APPLICATION="storeapps"
+              ;;
+            *edna*)
+              APPLICATION="edna"
+              ;;
+            *)
+              echo "Unable to determine application from repository: $REPOSITORY"
+              exit 1
+              ;;
+          esac
+
+          echo "Application: $APPLICATION"
+          echo "application=$APPLICATION" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Checkout EXACT commit for which the plan was generated
+      #
+      # This is important because the Terraform plan is tied to the
+      # configuration/provider versions used when the plan was created.
+      # -----------------------------------------------------------------------
+      - name: Checkout Plan Commit
+        uses: actions/checkout@v4
         with:
-          client-id: ${{ inputs.azure_client_id }}
-          tenant-id: ${{ inputs.azure_tenant_id }}
-          subscription-id: ${{ inputs.azure_subscription_id }}
+          ref: ${{ inputs.commit_sha }}
 
-      - name: Resolve which commit to deploy
-        id: resolve
+      # -----------------------------------------------------------------------
+      # Read Terraform Version
+      # -----------------------------------------------------------------------
+      - name: Read Terraform Version
+        id: tf_version
         run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.commit_sha }}" ]; then
-            echo "sha=${{ inputs.commit_sha }}" >> "$GITHUB_OUTPUT"
-          else
-            az storage blob download \
-              --account-name "${{ inputs.tfplan_storage_account }}" \
-              --container-name "${{ inputs.tfplan_container }}" \
-              --name "${{ inputs.application }}/${{ inputs.environment }}/latest-approved.json" \
-              --file latest-approved.json \
-              --auth-mode login
-            SHA=$(jq -r '.commit_sha' latest-approved.json)
-            echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "version=$(cat .terraform-version)" >> "$GITHUB_OUTPUT"
 
-      - name: Download plan from central Azure Storage
-        run: |
-          set -euo pipefail
-          SHA="${{ steps.resolve.outputs.sha }}"
-          SRC="${{ inputs.application }}/${{ inputs.environment }}/${SHA}"
-
-          az storage blob download \
-            --account-name "${{ inputs.tfplan_storage_account }}" \
-            --container-name "${{ inputs.tfplan_container }}" \
-            --name "${SRC}/tfplan" --file tfplan --auth-mode login
-
-          az storage blob download \
-            --account-name "${{ inputs.tfplan_storage_account }}" \
-            --container-name "${{ inputs.tfplan_container }}" \
-            --name "${SRC}/metadata.json" --file metadata.json --auth-mode login
-
-      - name: Validate metadata matches deployment intent
-        run: |
-          set -euo pipefail
-          APP=$(jq -r '.application' metadata.json)
-          ENV=$(jq -r '.environment' metadata.json)
-          SHA=$(jq -r '.commit_sha' metadata.json)
-          PR=$(jq -r '.pull_request_number' metadata.json)
-
-          if [ "$APP" != "${{ inputs.application }}" ] || [ "$ENV" != "${{ inputs.environment }}" ]; then
-            echo "::error::metadata mismatch — stored plan is for application=$APP environment=$ENV, but this deployment requested application=${{ inputs.application }} environment=${{ inputs.environment }}. Refusing to apply."
-            exit 1
-          fi
-
-          echo "Deploying commit ${SHA} (originating PR #${PR}) to ${{ inputs.application }}/${{ inputs.environment }}"
-
+      # -----------------------------------------------------------------------
+      # Setup Terraform
+      # -----------------------------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ${{ inputs.terraform_version }}
-          terraform_wrapper: false
+          terraform_version: ${{ steps.tf_version.outputs.version }}
 
-      - name: Terraform init
-        run: |
-          terraform init -input=false \
-            -backend-config="resource_group_name=${{ inputs.backend_resource_group }}" \
-            -backend-config="storage_account_name=${{ inputs.backend_storage_account }}" \
-            -backend-config="container_name=${{ inputs.backend_container }}" \
-            -backend-config="key=${{ inputs.backend_key }}"
-
-      - name: Terraform apply (exact saved plan — no re-plan)
-        run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Record deployment audit entry
-        if: always()
-        run: |
-          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) | app=${{ inputs.application }} env=${{ inputs.environment }} sha=${{ steps.resolve.outputs.sha }} actor=${{ github.actor }} run_id=${{ github.run_id }} status=${{ job.status }}" \
-            | tee -a deployment-audit.log
-
-      - name: Upload audit log
-        if: always()
-        uses: actions/upload-artifact@v4
+      # -----------------------------------------------------------------------
+      # Azure Login
+      # -----------------------------------------------------------------------
+      - name: Azure Login
+        uses: azure/login@v2
         with:
-          name: deploy-audit-${{ inputs.application }}-${{ inputs.environment }}-${{ github.run_id }}
-          path: ${{ inputs.working_directory }}/deployment-audit.log
-          retention-days: 90
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # -----------------------------------------------------------------------
+      # Download Approved Plan from Azure Storage
+      #
+      # Storage:
+      #
+      # <application>/<environment>/<commit-sha>/
+      # -----------------------------------------------------------------------
+      - name: Download Approved Plan
+        env:
+          STORAGE_ACCOUNT: ${{ secrets.TF_ARTIFACT_STORAGE_ACCOUNT }}
+          APPLICATION: ${{ steps.application.outputs.application }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+
+          mkdir -p approved-plan
+
+          az storage blob download-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --source "$APPLICATION" \
+            --pattern "$ENVIRONMENT/$COMMIT_SHA/*" \
+            --destination approved-plan \
+            --auth-mode login
+
+      # -----------------------------------------------------------------------
+      # Locate downloaded plan files
+      # -----------------------------------------------------------------------
+      - name: Prepare Approved Plan
+        run: |
+
+          echo "Downloaded files:"
+          find approved-plan -type f -print
+
+          TFPLAN=$(find approved-plan -type f -name "tfplan" | head -n 1)
+          TFPLAN_TXT=$(find approved-plan -type f -name "tfplan.txt" | head -n 1)
+          CHECKSUM=$(find approved-plan -type f -name "tfplan.sha256" | head -n 1)
+          METADATA=$(find approved-plan -type f -name "plan-metadata.json" | head -n 1)
+
+          test -n "$TFPLAN"
+          test -n "$CHECKSUM"
+          test -n "$METADATA"
+
+          cp "$TFPLAN" approved-tfplan
+          cp "$CHECKSUM" approved-tfplan.sha256
+          cp "$METADATA" approved-plan-metadata.json
+
+          if [ -n "$TFPLAN_TXT" ]; then
+            cp "$TFPLAN_TXT" approved-tfplan.txt
+          fi
+
+      # -----------------------------------------------------------------------
+      # Verify checksum
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Checksum
+        run: |
+
+          EXPECTED_FILE="approved-tfplan"
+
+          EXPECTED_HASH=$(awk '{print $1}' approved-tfplan.sha256)
+          ACTUAL_HASH=$(sha256sum "$EXPECTED_FILE" | awk '{print $1}')
+
+          echo "Expected SHA256: $EXPECTED_HASH"
+          echo "Actual SHA256:   $ACTUAL_HASH"
+
+          if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+            echo "Terraform plan checksum verification failed."
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Verify Plan Metadata
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Metadata
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ENVIRONMENT: ${{ inputs.environment }}
+          EXPECTED_COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+
+          jq -e \
+            --arg repo "$EXPECTED_REPOSITORY" \
+            --arg env "$EXPECTED_ENVIRONMENT" \
+            --arg sha "$EXPECTED_COMMIT_SHA" \
+            '
+            .repository == $repo and
+            .environment == $env and
+            .commit_sha == $sha
+            ' approved-plan-metadata.json
+
+      # -----------------------------------------------------------------------
+      # Terraform Init
+      #
+      # IMPORTANT:
+      # terraform plan is NOT executed.
+      # -----------------------------------------------------------------------
+      - name: Terraform Init
+        run: |
+
+          git config --global \
+            url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf \
+            "https://github.com/"
+
+          terraform init \
+            -backend-config=environment/${{ inputs.environment }}/backend.tfvars \
+            -input=false
+
+      # -----------------------------------------------------------------------
+      # APPLY EXACT APPROVED PLAN
+      #
+      # No terraform plan.
+      # -----------------------------------------------------------------------
+      - name: Terraform Apply Approved Plan
+        run: |
+
+          terraform apply \
+            -input=false \
+            -auto-approve \
+            approved-tfplan
+
+      # -----------------------------------------------------------------------
+      # Deployment Summary
+      # -----------------------------------------------------------------------
+      - name: Deployment Summary
+        env:
+          APPLICATION: ${{ steps.application.outputs.application }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+        run: |
+
+          echo "### Terraform Deployment Completed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application: $APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Plan Commit SHA: $COMMIT_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Terraform Plan: NOT EXECUTED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Terraform Apply: EXECUTED" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Storage Path: $APPLICATION/$ENVIRONMENT/$COMMIT_SHA" >> "$GITHUB_STEP_SUMMARY"

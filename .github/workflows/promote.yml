@@ -1,0 +1,278 @@
+name: Promote Terraform Plan
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+  pull-requests: read
+
+env:
+  ENVIRONMENT: dev
+
+jobs:
+
+  # ===========================================================================
+  # PROMOTE
+  # ===========================================================================
+  promote:
+    name: Promote Approved Terraform Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+
+      # -----------------------------------------------------------------------
+      # Determine Application from Repository
+      #
+      # Repository examples:
+      #
+      # az_terraform_platform_merchtools -> merch
+      # az_terraform_platform_storeapps  -> storeapps
+      # az_terraform_platform_edna       -> edna
+      # -----------------------------------------------------------------------
+      - name: Determine Application
+        id: application
+        env:
+          REPOSITORY: ${{ github.event.repository.name }}
+        run: |
+
+          case "$REPOSITORY" in
+            *merch*)
+              APPLICATION="merch"
+              ;;
+            *storeapps*)
+              APPLICATION="storeapps"
+              ;;
+            *edna*)
+              APPLICATION="edna"
+              ;;
+            *)
+              echo "Unable to determine application from repository: $REPOSITORY"
+              exit 1
+              ;;
+          esac
+
+          echo "Application: $APPLICATION"
+          echo "application=$APPLICATION" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Find PR merged by this main commit
+      # -----------------------------------------------------------------------
+      - name: Find Merged PR
+        id: merged_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          PR_NUMBER=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+            --jq '.[0].number')
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No pull request found for commit $GITHUB_SHA"
+            exit 1
+          fi
+
+          echo "Merged PR: #$PR_NUMBER"
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Get the exact PR HEAD SHA.
+      #
+      # This is the commit for which Terraform Plan was generated.
+      # -----------------------------------------------------------------------
+      - name: Get PR Head SHA
+        id: pr_sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.merged_pr.outputs.pr_number }}
+        run: |
+
+          PR_HEAD_SHA=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '.head.sha')
+
+          if [ -z "$PR_HEAD_SHA" ]; then
+            echo "Unable to determine PR head SHA"
+            exit 1
+          fi
+
+          echo "PR Plan Commit SHA: $PR_HEAD_SHA"
+
+          echo "pr_head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Find successful plan workflow for exact PR commit
+      # -----------------------------------------------------------------------
+      - name: Find Plan Workflow Run
+        id: plan_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ steps.pr_sha.outputs.pr_head_sha }}
+        run: |
+
+          PLAN_RUN_ID=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/plan.yml/runs?event=pull_request&status=success&head_sha=${PR_HEAD_SHA}&per_page=100" \
+            --jq '.workflow_runs[0].id')
+
+          if [ -z "$PLAN_RUN_ID" ] || [ "$PLAN_RUN_ID" = "null" ]; then
+            echo "No successful plan workflow found for commit $PR_HEAD_SHA"
+            exit 1
+          fi
+
+          echo "Plan Workflow Run ID: $PLAN_RUN_ID"
+
+          echo "plan_run_id=$PLAN_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Find Terraform plan artifact
+      # -----------------------------------------------------------------------
+      - name: Find Plan Artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ steps.plan_run.outputs.plan_run_id }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          PR_HEAD_SHA: ${{ steps.pr_sha.outputs.pr_head_sha }}
+        run: |
+
+          ARTIFACT_NAME="terraform-plan-${ENVIRONMENT}-${PR_HEAD_SHA}"
+
+          ARTIFACT_EXISTS=$(gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${PLAN_RUN_ID}/artifacts" \
+            --jq ".artifacts[] | select(.name == \"${ARTIFACT_NAME}\") | .name")
+
+          if [ -z "$ARTIFACT_EXISTS" ]; then
+            echo "Expected artifact not found:"
+            echo "$ARTIFACT_NAME"
+            exit 1
+          fi
+
+          echo "Artifact: $ARTIFACT_NAME"
+
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Download exact GitHub artifact
+      # -----------------------------------------------------------------------
+      - name: Download Plan Artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_RUN_ID: ${{ steps.plan_run.outputs.plan_run_id }}
+          ARTIFACT_NAME: ${{ steps.artifact.outputs.artifact_name }}
+        run: |
+
+          mkdir -p terraform-plan
+
+          gh run download "$PLAN_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "$ARTIFACT_NAME" \
+            --dir terraform-plan
+
+      # -----------------------------------------------------------------------
+      # Verify downloaded files
+      # -----------------------------------------------------------------------
+      - name: Verify Artifact Files
+        run: |
+
+          echo "Downloaded files:"
+          find terraform-plan -type f -print
+
+          test -f terraform-plan/tfplan
+          test -f terraform-plan/tfplan.txt
+          test -f terraform-plan/tfplan.sha256
+          test -f terraform-plan/plan-metadata.json
+
+      # -----------------------------------------------------------------------
+      # Verify Plan Checksum
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Checksum
+        working-directory: terraform-plan
+        run: |
+          sha256sum -c tfplan.sha256
+
+      # -----------------------------------------------------------------------
+      # Verify Plan Metadata
+      # -----------------------------------------------------------------------
+      - name: Verify Plan Metadata
+        working-directory: terraform-plan
+        env:
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+          EXPECTED_ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          EXPECTED_COMMIT_SHA: ${{ steps.pr_sha.outputs.pr_head_sha }}
+        run: |
+
+          jq -e \
+            --arg repo "$EXPECTED_REPOSITORY" \
+            --arg env "$EXPECTED_ENVIRONMENT" \
+            --arg sha "$EXPECTED_COMMIT_SHA" \
+            '
+            .repository == $repo and
+            .environment == $env and
+            .commit_sha == $sha
+            ' plan-metadata.json
+
+      # -----------------------------------------------------------------------
+      # Azure Login
+      # -----------------------------------------------------------------------
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # -----------------------------------------------------------------------
+      # Promote to Azure Blob Storage
+      #
+      # Storage structure:
+      #
+      # <application>/<environment>/<commit-sha>/
+      #
+      # Example:
+      #
+      # storeapps/dev/a82f91c6/
+      # -----------------------------------------------------------------------
+      - name: Upload Approved Plan to Azure Storage
+        env:
+          STORAGE_ACCOUNT: ${{ secrets.TF_ARTIFACT_STORAGE_ACCOUNT }}
+          APPLICATION: ${{ steps.application.outputs.application }}
+          ENVIRONMENT: ${{ env.ENVIRONMENT }}
+          PLAN_SHA: ${{ steps.pr_sha.outputs.pr_head_sha }}
+        run: |
+
+          az storage container create \
+            --name "$APPLICATION" \
+            --account-name "$STORAGE_ACCOUNT" \
+            --auth-mode login
+
+          az storage blob upload-batch \
+            --account-name "$STORAGE_ACCOUNT" \
+            --destination "$APPLICATION/$ENVIRONMENT/$PLAN_SHA" \
+            --source terraform-plan \
+            --auth-mode login \
+            --overwrite false
+
+      # -----------------------------------------------------------------------
+      # Summary
+      # -----------------------------------------------------------------------
+      - name: Promotion Summary
+        env:
+          APPLICATION: ${{ steps.application.outputs.application }}
+          PLAN_SHA: ${{ steps.pr_sha.outputs.pr_head_sha }}
+          PR_NUMBER: ${{ steps.merged_pr.outputs.pr_number }}
+        run: |
+
+          echo "### Terraform Plan Promoted" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Application: $APPLICATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Environment: $ENVIRONMENT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PR: #$PR_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Plan Commit SHA: $PLAN_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Storage Path: $APPLICATION/$ENVIRONMENT/$PLAN_SHA" >> "$GITHUB_STEP_SUMMARY"
