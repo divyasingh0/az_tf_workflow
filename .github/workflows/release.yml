@@ -6,8 +6,6 @@ name: Release
 #
 # version.yml calculates the version.
 # This workflow creates the Git tag and GitHub Release.
-#
-# PR information is NOT used.
 # -----------------------------------------------------------------------------
 
 on:
@@ -22,31 +20,31 @@ on:
         default: "v"
 
       initial_version:
-        description: "Initial version when no previous release tag exists"
+        description: "Initial version"
         required: false
         type: string
         default: "0.1.0"
 
       bump_override:
-        description: "Force version bump: auto | major | minor | patch"
+        description: "Version bump: auto | major | minor | patch"
         required: false
         type: string
         default: "auto"
 
       dry_run:
-        description: "Preview only. Do not create tag or release."
+        description: "Preview only"
         required: false
         type: boolean
         default: false
 
       draft:
-        description: "Create GitHub Release as draft"
+        description: "Create draft release"
         required: false
         type: boolean
         default: false
 
       prerelease:
-        description: "Create GitHub Release as prerelease"
+        description: "Create prerelease"
         required: false
         type: boolean
         default: false
@@ -54,21 +52,20 @@ on:
     outputs:
 
       released_version:
-        description: "Released semantic version"
+        description: "Released version"
         value: ${{ jobs.release.outputs.released_version }}
 
       released_tag:
-        description: "Released Git tag"
+        description: "Released tag"
         value: ${{ jobs.release.outputs.released_tag }}
 
       bump_type:
-        description: "Version bump type"
+        description: "Version bump"
         value: ${{ jobs.version.outputs.bump_type }}
 
 
 permissions:
   contents: write
-
 
 
 jobs:
@@ -91,11 +88,11 @@ jobs:
 
 
   # ============================================================================
-  # Create tag and GitHub Release
+  # Create tag and release
   # ============================================================================
   release:
 
-    name: Create ${{ needs.version.outputs.release_tag_prefix }} Release
+    name: Create Release
 
     needs: version
 
@@ -104,16 +101,19 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
+
       released_version: ${{ steps.tag.outputs.version }}
+
       released_tag: ${{ steps.tag.outputs.tag }}
+
 
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout exact commit that triggered the release
+      # Checkout exact commit
       # -----------------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
@@ -137,10 +137,7 @@ jobs:
         env:
           NEXT_TAG: ${{ needs.version.outputs.next_tag }}
           NEXT_VERSION: ${{ needs.version.outputs.next_version }}
-          BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
           DRY_RUN: ${{ inputs.dry_run }}
-          RELEASE_PREFIX: ${{ needs.version.outputs.release_tag_prefix }}
-          RELEASE_SCOPE: ${{ needs.version.outputs.release_scope }}
 
         run: |
           set -euo pipefail
@@ -148,27 +145,29 @@ jobs:
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
 
-          echo "::group::Release Information"
-          echo "Commit SHA  : ${GITHUB_SHA}"
-          echo "Scope       : ${RELEASE_SCOPE:-repo-wide}"
-          echo "Tag prefix  : ${RELEASE_PREFIX}"
-          echo "Bump type   : ${BUMP_TYPE}"
+          echo "::group::Release"
+          echo "Commit      : ${GITHUB_SHA}"
           echo "Version     : ${NEXT_VERSION}"
           echo "Tag         : ${NEXT_TAG}"
+          echo "Bump        : ${{ needs.version.outputs.bump_type }}"
+          echo "Scope       : ${{ needs.version.outputs.release_scope || 'repo-wide' }}"
           echo "::endgroup::"
 
           if [[ "$DRY_RUN" == "true" ]]; then
-            echo "::notice::Dry run - tag $NEXT_TAG would be created."
+            echo "::notice::Dry run - tag ${NEXT_TAG} would be created."
             exit 0
           fi
 
           # Prevent duplicate tag creation.
           if git rev-parse "$NEXT_TAG" >/dev/null 2>&1; then
-            echo "::error::Tag already exists: $NEXT_TAG"
+            echo "::error::Tag already exists: ${NEXT_TAG}"
             exit 1
           fi
 
-          git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
+          git tag -a "$NEXT_TAG" \
+            -m "Release $NEXT_TAG" \
+            "$GITHUB_SHA"
+
           git push origin "$NEXT_TAG"
 
 
@@ -212,12 +211,10 @@ jobs:
           {
             echo "## Release Summary"
             echo
-            echo "- Commit SHA: \`${{ github.sha }}\`"
+            echo "- Commit: \`${{ needs.version.outputs.commit_message }}\`"
             echo "- Scope: \`${{ needs.version.outputs.release_scope || 'repo-wide' }}\`"
-            echo "- Tag prefix: \`${{ needs.version.outputs.release_tag_prefix }}\`"
-            echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
+            echo "- Bump: \`${{ needs.version.outputs.bump_type }}\`"
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
             echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
-            echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
-            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
