@@ -4,15 +4,19 @@ name: release-version
 # -----------------------------------------------------------------------------
 # Reusable workflow for calculating the next semantic version.
 #
-# The release stream is automatically determined from the Conventional
-# Commit scope.
+# VERSIONING STRATEGY
+# -------------------
+# Versioning is based ONLY on the Conventional Commit message.
+#
+# PR title is NOT used for version calculation.
+# PR title is used separately by release.yml for release notes.
 #
 # Examples:
 #
 #   feat(workflow): add release automation
 #       -> workflow-v2.1.0
 #
-#   fix(workflow): fix workflow
+#   fix(workflow): fix release workflow
 #       -> workflow-v2.1.1
 #
 #   feat(release): improve release process
@@ -21,7 +25,16 @@ name: release-version
 #   feat: common repository change
 #       -> v2.1.0
 #
-# Only the release stream matching the triggering PR/commit is updated.
+#   fix: common repository fix
+#       -> v2.0.1
+#
+# The scope determines the release stream:
+#
+#   workflow  -> workflow-vX.Y.Z
+#   release   -> release-vX.Y.Z
+#   no scope  -> vX.Y.Z
+#
+# Only the matching tag stream is used to calculate the next version.
 # -----------------------------------------------------------------------------
 
 on:
@@ -29,43 +42,54 @@ on:
 
     inputs:
 
-      # -------------------------------------------------------------------------
-      # Default release tag prefix
-      # -------------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # Default tag prefix
+      #
+      # Used when the Conventional Commit has NO scope.
+      #
+      # Example:
+      #   feat: update common workflow
+      #   -> v2.1.0
+      # -----------------------------------------------------------------------
       tag_prefix:
-        description: "Default tag prefix when no Conventional Commit scope exists"
+        description: "Default release tag prefix"
         required: false
         type: string
         default: "v"
 
+      # -----------------------------------------------------------------------
+      # Initial version
+      # -----------------------------------------------------------------------
       initial_version:
         description: "Baseline version when no previous release tag exists"
         required: false
         type: string
         default: "0.1.0"
 
+      # -----------------------------------------------------------------------
+      # Manual version bump override
+      # -----------------------------------------------------------------------
       bump_override:
         description: "Override automatic version detection: auto | major | minor | patch"
         required: false
         type: string
         default: "auto"
 
-
-    # ---------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     # Outputs
-    # ---------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
     outputs:
 
       current_version:
-        description: "Latest released version for the selected release stream"
+        description: "Latest version for the selected release stream"
         value: ${{ jobs.compute-version.outputs.current_version }}
 
       next_version:
-        description: "Calculated next version"
+        description: "Next semantic version"
         value: ${{ jobs.compute-version.outputs.next_version }}
 
       next_tag:
-        description: "Calculated next Git tag"
+        description: "Next Git tag"
         value: ${{ jobs.compute-version.outputs.next_tag }}
 
       bump_type:
@@ -73,16 +97,20 @@ on:
         value: ${{ jobs.compute-version.outputs.bump_type }}
 
       has_changes:
-        description: "Whether the triggering PR requires a release"
+        description: "Whether a release is required"
         value: ${{ jobs.compute-version.outputs.has_changes }}
 
       release_scope:
-        description: "Conventional Commit scope selected for this release"
+        description: "Conventional Commit scope"
         value: ${{ jobs.compute-version.outputs.release_scope }}
 
       release_tag_prefix:
-        description: "Tag prefix selected for this release stream"
+        description: "Release tag prefix"
         value: ${{ jobs.compute-version.outputs.release_tag_prefix }}
+
+      commit_message:
+        description: "Commit message used for versioning"
+        value: ${{ jobs.compute-version.outputs.commit_message }}
 
 
 # -----------------------------------------------------------------------------
@@ -90,7 +118,6 @@ on:
 # -----------------------------------------------------------------------------
 permissions:
   contents: read
-  pull-requests: read
 
 
 jobs:
@@ -110,22 +137,22 @@ jobs:
       has_changes: ${{ steps.semver.outputs.has_changes }}
       release_scope: ${{ steps.semver.outputs.release_scope }}
       release_tag_prefix: ${{ steps.semver.outputs.release_tag_prefix }}
-
+      commit_message: ${{ steps.semver.outputs.commit_message }}
 
     steps:
 
-      # -------------------------------------------------------------------------
-      # Checkout
-      # -------------------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # Checkout repository
+      # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
 
-      # -------------------------------------------------------------------------
+      # -----------------------------------------------------------------------
       # Calculate semantic version
-      # -------------------------------------------------------------------------
+      # -----------------------------------------------------------------------
       - name: Calculate semantic version
         id: semver
         shell: bash
@@ -133,69 +160,46 @@ jobs:
           DEFAULT_TAG_PREFIX: ${{ inputs.tag_prefix }}
           INITIAL_VERSION: ${{ inputs.initial_version }}
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
-          SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          # ---------------------------------------------------------------------
-          # Get triggering PR
-          # ---------------------------------------------------------------------
-          PR=$(gh api \
-            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
-            --jq '
-              .[]
-              | select(.merged_at != null)
-              | {
-                  number,
-                  title,
-                  author: .user.login
-                }
-            ' \
-            | jq -s '.[0] // empty')
-
-          # ---------------------------------------------------------------------
-          # Determine commit / PR title
-          # ---------------------------------------------------------------------
-          if [[ -n "$PR" ]]; then
-
-            PR_NUMBER=$(echo "$PR" | jq -r '.number')
-            PR_TITLE=$(echo "$PR" | jq -r '.title')
-            PR_AUTHOR=$(echo "$PR" | jq -r '.author')
-
-            echo "::group::Triggering Pull Request"
-            echo "PR number : #${PR_NUMBER}"
-            echo "PR title  : ${PR_TITLE}"
-            echo "PR author : @${PR_AUTHOR}"
-            echo "::endgroup::"
-
-          else
-
-            echo "::warning::No merged pull request found for commit ${SHA}."
-
-            PR_TITLE=$(git log -1 --pretty=format:"%s")
-
-            echo "::notice::Using commit message: ${PR_TITLE}"
-
-          fi
-
-
-          # ---------------------------------------------------------------------
-          # Parse Conventional Commit
+          # =====================================================================
+          # STEP 1 - Get the commit message
           #
-          # Supported examples:
+          # IMPORTANT:
+          # Versioning is based ONLY on the commit message.
+          # PR title is intentionally NOT used here.
+          # =====================================================================
+
+          COMMIT_MESSAGE="$(git log -1 --pretty=format:"%s")"
+
+          echo "::group::Commit Information"
+          echo "Commit message: ${COMMIT_MESSAGE}"
+          echo "::endgroup::"
+
+
+          # =====================================================================
+          # STEP 2 - Parse Conventional Commit
           #
-          #   feat(workflow): ...
-          #   fix(workflow): ...
-          #   feat(release)!: ...
-          #   feat: ...
-          # ---------------------------------------------------------------------
+          # Supported:
+          #
+          #   feat(workflow): add feature
+          #   fix(workflow): fix issue
+          #   feat(workflow)!: breaking change
+          #   feat: common change
+          #   fix: common fix
+          #
+          # =====================================================================
 
           COMMIT_TYPE=""
           COMMIT_SCOPE=""
           BREAKING="false"
 
-          if [[ "$PR_TITLE" =~ ^([a-zA-Z]+)(\(([a-zA-Z0-9._-]+)\))?(!)?:[[:space:]] ]]; then
+          # Remove leading/trailing whitespace
+          COMMIT_MESSAGE="$(echo "$COMMIT_MESSAGE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+
+          if [[ "$COMMIT_MESSAGE" =~ ^([a-zA-Z]+)(\(([a-zA-Z0-9._-]+)\))?(!)?:[[:space:]]*(.+)$ ]]; then
 
             COMMIT_TYPE="${BASH_REMATCH[1]}"
             COMMIT_SCOPE="${BASH_REMATCH[3]:-}"
@@ -204,15 +208,10 @@ jobs:
               BREAKING="true"
             fi
 
-          elif [[ "$PR_TITLE" =~ ^BREAKING[[:space:]]CHANGE: ]]; then
-
-            COMMIT_TYPE="breaking"
-            COMMIT_SCOPE=""
-            BREAKING="true"
-
           else
 
             echo "::notice::Commit does not follow Conventional Commit format."
+            echo "::notice::Expected format: feat(workflow): description"
             echo "::notice::No release will be created."
 
             {
@@ -223,6 +222,9 @@ jobs:
               echo "bump_type=none"
               echo "release_scope="
               echo "release_tag_prefix=${DEFAULT_TAG_PREFIX}"
+              echo "commit_message<<EOF"
+              echo "$COMMIT_MESSAGE"
+              echo "EOF"
             } >> "$GITHUB_OUTPUT"
 
             exit 0
@@ -230,8 +232,15 @@ jobs:
           fi
 
 
-          # ---------------------------------------------------------------------
-          # Determine release stream
+          echo "::group::Conventional Commit"
+          echo "Type      : ${COMMIT_TYPE}"
+          echo "Scope     : ${COMMIT_SCOPE:-none}"
+          echo "Breaking  : ${BREAKING}"
+          echo "::endgroup::"
+
+
+          # =====================================================================
+          # STEP 3 - Determine release stream
           #
           # Scoped commit:
           #
@@ -245,7 +254,8 @@ jobs:
           #
           #   feat: ...
           #       -> v
-          # ---------------------------------------------------------------------
+          #
+          # =====================================================================
 
           if [[ -n "$COMMIT_SCOPE" ]]; then
 
@@ -261,37 +271,47 @@ jobs:
 
 
           echo "::group::Release Stream"
-          echo "Commit type    : ${COMMIT_TYPE}"
-          echo "Commit scope   : ${COMMIT_SCOPE:-<none>}"
-          echo "Release scope  : ${RELEASE_SCOPE:-repo-wide}"
-          echo "Tag prefix     : ${RELEASE_TAG_PREFIX}"
+          echo "Commit scope : ${COMMIT_SCOPE:-none}"
+          echo "Release scope: ${RELEASE_SCOPE:-default}"
+          echo "Tag prefix   : ${RELEASE_TAG_PREFIX}"
           echo "::endgroup::"
 
 
-          # ---------------------------------------------------------------------
-          # Determine current version for THIS stream only
+          # =====================================================================
+          # STEP 4 - Find latest tag ONLY for this release stream
           #
           # Example:
           #
           #   workflow-v2.3.0
           #   workflow-v2.2.0
           #   release-v2.5.0
+          #   release-v2.4.0
+          #   v2.1.0
           #
-          # A workflow commit only looks at workflow-v*.
-          # ---------------------------------------------------------------------
+          # For:
+          #
+          #   feat(workflow): ...
+          #
+          # ONLY workflow-v* is considered.
+          # =====================================================================
 
           LAST_TAG=$(
             git tag --list "${RELEASE_TAG_PREFIX}[0-9]*" \
               --sort=-v:refname |
-            head -n1 || true
+            head -n 1 || true
           )
 
+
+          # =====================================================================
+          # STEP 5 - Determine current version
+          # =====================================================================
 
           if [[ -z "$LAST_TAG" ]]; then
 
             CURRENT_VERSION="$INITIAL_VERSION"
 
-            echo "::notice::No existing release tag found for '${RELEASE_TAG_PREFIX}'."
+            echo "::notice::No previous tag found for '${RELEASE_TAG_PREFIX}'."
+            echo "::notice::Starting from ${INITIAL_VERSION}."
 
           else
 
@@ -301,14 +321,14 @@ jobs:
 
 
           echo "::group::Current Release"
-          echo "Latest tag      : ${LAST_TAG:-<none>}"
-          echo "Current version : ${CURRENT_VERSION}"
+          echo "Latest tag     : ${LAST_TAG:-none}"
+          echo "Current version: ${CURRENT_VERSION}"
           echo "::endgroup::"
 
 
-          # ---------------------------------------------------------------------
-          # Determine version bump
-          # ---------------------------------------------------------------------
+          # =====================================================================
+          # STEP 6 - Determine version bump
+          # =====================================================================
 
           HAS_CHANGES="true"
 
@@ -345,8 +365,10 @@ jobs:
 
           else
 
-            # Other Conventional Commit types do not create a release.
-            echo "::notice::Commit type '${COMMIT_TYPE}' does not require a release."
+            # chore, docs, refactor, style, test, ci, etc.
+            # do not create a release automatically.
+
+            echo "::notice::Commit type '${COMMIT_TYPE}' does not trigger a release."
 
             HAS_CHANGES="false"
             BUMP="none"
@@ -354,9 +376,10 @@ jobs:
           fi
 
 
-          # ---------------------------------------------------------------------
-          # No release required
-          # ---------------------------------------------------------------------
+          # =====================================================================
+          # STEP 7 - No release required
+          # =====================================================================
+
           if [[ "$HAS_CHANGES" == "false" ]]; then
 
             {
@@ -367,6 +390,9 @@ jobs:
               echo "bump_type=none"
               echo "release_scope=$RELEASE_SCOPE"
               echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
+              echo "commit_message<<EOF"
+              echo "$COMMIT_MESSAGE"
+              echo "EOF"
             } >> "$GITHUB_OUTPUT"
 
             exit 0
@@ -374,10 +400,22 @@ jobs:
           fi
 
 
-          # ---------------------------------------------------------------------
-          # Calculate next semantic version
-          # ---------------------------------------------------------------------
+          # =====================================================================
+          # STEP 8 - Calculate next semantic version
+          # =====================================================================
+
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+
+          # Validate semantic version
+          if ! [[ "$MAJOR" =~ ^[0-9]+$ &&
+                  "$MINOR" =~ ^[0-9]+$ &&
+                  "$PATCH" =~ ^[0-9]+$ ]]; then
+
+            echo "::error::Invalid semantic version: ${CURRENT_VERSION}"
+            exit 1
+
+          fi
 
 
           case "$BUMP" in
@@ -404,24 +442,10 @@ jobs:
           NEXT_TAG="${RELEASE_TAG_PREFIX}${NEXT_VERSION}"
 
 
-          # ---------------------------------------------------------------------
-          # Release calculation summary
-          # ---------------------------------------------------------------------
-          echo "::group::Release Calculation"
-          echo "PR title        : ${PR_TITLE}"
-          echo "Commit type     : ${COMMIT_TYPE}"
-          echo "Commit scope    : ${COMMIT_SCOPE:-<none>}"
-          echo "Release scope   : ${RELEASE_SCOPE:-repo-wide}"
-          echo "Bump type       : ${BUMP}"
-          echo "Current version : ${CURRENT_VERSION}"
-          echo "Next version    : ${NEXT_VERSION}"
-          echo "Next tag        : ${NEXT_TAG}"
-          echo "::endgroup::"
+          # =====================================================================
+          # STEP 9 - Outputs
+          # =====================================================================
 
-
-          # ---------------------------------------------------------------------
-          # Workflow outputs
-          # ---------------------------------------------------------------------
           {
             echo "has_changes=true"
             echo "current_version=$CURRENT_VERSION"
@@ -430,24 +454,29 @@ jobs:
             echo "bump_type=$BUMP"
             echo "release_scope=$RELEASE_SCOPE"
             echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
+            echo "commit_message<<EOF"
+            echo "$COMMIT_MESSAGE"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
 
-          # ---------------------------------------------------------------------
-          # GitHub Actions summary
-          # ---------------------------------------------------------------------
+          # =====================================================================
+          # STEP 10 - GitHub Actions summary
+          # =====================================================================
+
           {
             echo "## Release Calculation"
             echo
             echo "| Property | Value |"
             echo "|---|---|"
-            echo "| Commit | ${PR_TITLE} |"
+            echo "| Commit message | ${COMMIT_MESSAGE} |"
             echo "| Commit type | ${COMMIT_TYPE} |"
             echo "| Commit scope | ${COMMIT_SCOPE:-none} |"
-            echo "| Release scope | ${RELEASE_SCOPE:-repo-wide} |"
+            echo "| Release scope | ${RELEASE_SCOPE:-default} |"
             echo "| Release tag prefix | ${RELEASE_TAG_PREFIX} |"
+            echo "| Previous tag | ${LAST_TAG:-none} |"
             echo "| Current version | ${CURRENT_VERSION} |"
-            echo "| Next version | ${NEXT_VERSION} |"
             echo "| Bump type | ${BUMP} |"
+            echo "| Next version | ${NEXT_VERSION} |"
             echo "| Next tag | ${NEXT_TAG} |"
           } >> "$GITHUB_STEP_SUMMARY"
