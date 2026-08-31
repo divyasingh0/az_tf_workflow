@@ -1,17 +1,16 @@
 name: Release
 
 # -----------------------------------------------------------------------------
-# Reusable release workflow
+# Reusable release workflow.
 #
 # VERSIONING
 # ----------
-# Versioning is handled ONLY by version.yml using the Conventional Commit.
+# version.yml is the single source of truth for version calculation.
 #
-# RELEASE NOTES
-# -------------
-# PR metadata is passed by release-trigger.yml.
-# PR title is used ONLY for release notes.
-#
+# RELEASE
+# -------
+# This workflow creates the Git tag and GitHub Release based on the version
+# calculated by version.yml.
 # -----------------------------------------------------------------------------
 
 on:
@@ -23,7 +22,7 @@ on:
       # Default tag prefix
       # -----------------------------------------------------------------------
       tag_prefix:
-        description: "Default release tag prefix when commit has no scope"
+        description: "Default tag prefix when commit has no scope"
         required: false
         type: string
         default: "v"
@@ -32,50 +31,19 @@ on:
       # Initial version
       # -----------------------------------------------------------------------
       initial_version:
-        description: "Initial version when no previous release tag exists"
+        description: "Initial version when no previous tag exists"
         required: false
         type: string
         default: "0.1.0"
 
       # -----------------------------------------------------------------------
-      # Manual version bump override
+      # Version bump override
       # -----------------------------------------------------------------------
       bump_override:
         description: "Force version bump: auto | major | minor | patch"
         required: false
         type: string
         default: "auto"
-
-      # -----------------------------------------------------------------------
-      # PR metadata
-      #
-      # IMPORTANT:
-      # These values are used ONLY for release notes.
-      # They are NOT passed to version.yml.
-      # -----------------------------------------------------------------------
-      pr_title:
-        description: "Merged PR title used only for release notes"
-        required: false
-        type: string
-        default: ""
-
-      pr_number:
-        description: "Merged PR number used only for release notes"
-        required: false
-        type: string
-        default: ""
-
-      pr_url:
-        description: "Merged PR URL used only for release notes"
-        required: false
-        type: string
-        default: ""
-
-      pr_author:
-        description: "Merged PR author used only for release notes"
-        required: false
-        type: string
-        default: ""
 
       # -----------------------------------------------------------------------
       # Dry run
@@ -113,9 +81,6 @@ on:
         type: string
         default: ""
 
-    # -------------------------------------------------------------------------
-    # Outputs
-    # -------------------------------------------------------------------------
     outputs:
 
       released_version:
@@ -150,10 +115,6 @@ jobs:
 
   # ============================================================================
   # Calculate version
-  #
-  # IMPORTANT:
-  # version.yml uses ONLY the Conventional Commit message.
-  # PR title is NOT used here.
   # ============================================================================
   version:
     name: Calculate Version
@@ -193,6 +154,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
 
       # -----------------------------------------------------------------------
@@ -217,6 +179,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           RELEASE_PREFIX: ${{ needs.version.outputs.release_tag_prefix }}
           RELEASE_SCOPE: ${{ needs.version.outputs.release_scope }}
+
         run: |
           set -euo pipefail
 
@@ -236,62 +199,14 @@ jobs:
             exit 0
           fi
 
+          # Prevent accidental duplicate tag creation.
+          if git rev-parse "$NEXT_TAG" >/dev/null 2>&1; then
+            echo "::error::Tag already exists: $NEXT_TAG"
+            exit 1
+          fi
+
           git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
           git push origin "$NEXT_TAG"
-
-
-      # -----------------------------------------------------------------------
-      # Generate release notes
-      #
-      # IMPORTANT:
-      # PR title is used ONLY here.
-      # It has no effect on versioning.
-      # -----------------------------------------------------------------------
-      - name: Generate release notes
-        if: inputs.dry_run == false
-        id: changelog
-        shell: bash
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-          PR_TITLE: ${{ inputs.pr_title }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          PR_URL: ${{ inputs.pr_url }}
-          PR_AUTHOR: ${{ inputs.pr_author }}
-          SCOPE: ${{ needs.version.outputs.release_scope }}
-        run: |
-          set -euo pipefail
-
-          {
-            echo "## Changes"
-            echo
-
-            if [[ -n "$PR_TITLE" ]]; then
-
-              if [[ -n "$PR_NUMBER" && -n "$PR_URL" ]]; then
-
-                if [[ -n "$PR_AUTHOR" ]]; then
-                  echo "- ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL})) by @${PR_AUTHOR}"
-                else
-                  echo "- ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL}))"
-                fi
-
-              else
-                echo "- ${PR_TITLE}"
-              fi
-
-            else
-              echo "- Release generated from Conventional Commit."
-            fi
-
-            echo
-            echo "### Release Information"
-            echo
-            echo "- Scope: \`${SCOPE:-repo-wide}\`"
-            echo "- Tag: \`${TAG}\`"
-
-          } > "$RUNNER_TEMP/release-notes.md"
-
-          echo "file=$RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
 
 
       # -----------------------------------------------------------------------
@@ -302,17 +217,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
-          NOTES_FILE: ${{ steps.changelog.outputs.file }}
           DRAFT: ${{ inputs.draft }}
           PRERELEASE: ${{ inputs.prerelease }}
           TARGET: ${{ inputs.target_commitish }}
+
         run: |
           set -euo pipefail
 
           ARGS=(
             "$TAG"
             --title "$TAG"
-            --notes-file "$NOTES_FILE"
+            --generate-notes
           )
 
           if [[ "$DRAFT" == "true" ]]; then
@@ -345,7 +260,5 @@ jobs:
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
             echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
             echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
-            echo "- PR: #${{ inputs.pr_number || 'N/A' }}"
-            echo "- PR title: \`${{ inputs.pr_title || 'N/A' }}\`"
             echo "- Dry run: \`${{ inputs.dry_run }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
