@@ -1,4 +1,3 @@
-
 name: Release
 
 # -----------------------------------------------------------------------------
@@ -6,10 +5,35 @@ name: Release
 #
 # VERSIONING
 # ----------
-# The commit message is passed from release-workflow.yml.
-# version.yml is the single source of truth for version calculation.
+# The commit message from the merged PR is the source of truth.
 #
-# PR title and PR description are NOT used for versioning.
+# Examples:
+#
+#   feat(workflow): add release automation
+#       -> workflow-v2.1.0
+#
+#   fix(workflow): fix release workflow
+#       -> workflow-v2.0.1
+#
+#   feat(workflow)!: breaking change
+#       -> workflow-v3.0.0
+#
+#   feat: common feature
+#       -> v2.1.0
+#
+# Non-release commits:
+#
+#   docs: update README
+#   chore: update CI
+#   refactor: cleanup
+#
+#       -> No release
+#
+# Invalid Conventional Commit:
+#
+#   update workflow
+#
+#       -> No release
 # -----------------------------------------------------------------------------
 
 on:
@@ -17,10 +41,9 @@ on:
 
     inputs:
 
-      commit_message:
-        description: "Conventional Commit message used for versioning"
-        required: true
-        type: string
+      # -----------------------------------------------------------------------
+      # Default tag prefix
+      # -----------------------------------------------------------------------
 
       tag_prefix:
         description: "Default release tag prefix"
@@ -28,11 +51,21 @@ on:
         type: string
         default: "v"
 
+
+      # -----------------------------------------------------------------------
+      # Initial version
+      # -----------------------------------------------------------------------
+
       initial_version:
-        description: "Initial version"
+        description: "Initial version when no previous tag exists"
         required: false
         type: string
         default: "0.1.0"
+
+
+      # -----------------------------------------------------------------------
+      # Version bump override
+      # -----------------------------------------------------------------------
 
       bump_override:
         description: "Version bump: auto | major | minor | patch"
@@ -40,28 +73,48 @@ on:
         type: string
         default: "auto"
 
+
+      # -----------------------------------------------------------------------
+      # Dry run
+      # -----------------------------------------------------------------------
+
       dry_run:
-        description: "Preview only"
+        description: "Preview only. Do not create tag or release."
         required: false
         type: boolean
         default: false
+
+
+      # -----------------------------------------------------------------------
+      # Draft
+      # -----------------------------------------------------------------------
 
       draft:
-        description: "Create draft release"
+        description: "Create GitHub Release as draft"
         required: false
         type: boolean
         default: false
 
+
+      # -----------------------------------------------------------------------
+      # Prerelease
+      # -----------------------------------------------------------------------
+
       prerelease:
-        description: "Create prerelease"
+        description: "Create GitHub Release as prerelease"
         required: false
         type: boolean
         default: false
+
+
+    # -------------------------------------------------------------------------
+    # Outputs
+    # -------------------------------------------------------------------------
 
     outputs:
 
       released_version:
-        description: "Released version"
+        description: "Released semantic version"
         value: ${{ jobs.release.outputs.released_version }}
 
       released_tag:
@@ -69,8 +122,8 @@ on:
         value: ${{ jobs.release.outputs.released_tag }}
 
       bump_type:
-        description: "Version bump"
-        value: ${{ jobs.version.outputs.bump_type }}
+        description: "Version bump type"
+        value: ${{ jobs.calculate-version.outputs.bump_type }}
 
 
 # -----------------------------------------------------------------------------
@@ -79,40 +132,417 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 
 # -----------------------------------------------------------------------------
-# Calculate version
+# Jobs
 # -----------------------------------------------------------------------------
 
 jobs:
 
-  version:
+  # ============================================================================
+  # JOB 1 - Calculate Version
+  # ============================================================================
+  #
+  # This job:
+  #
+  # 1. Gets the commits belonging to the merged PR.
+  # 2. Reads the commit message.
+  # 3. Parses Conventional Commit.
+  # 4. Determines release scope.
+  # 5. Finds the latest tag for that scope.
+  # 6. Calculates the next version.
+  #
+  # ============================================================================
+
+  calculate-version:
 
     name: Calculate Version
 
-    uses: ./.github/workflows/version.yml
+    runs-on: ubuntu-latest
 
-    with:
-      commit_message: ${{ inputs.commit_message }}
-      tag_prefix: ${{ inputs.tag_prefix }}
-      initial_version: ${{ inputs.initial_version }}
-      bump_override: ${{ inputs.bump_override }}
+    outputs:
 
-    secrets: inherit
+      has_changes: ${{ steps.version.outputs.has_changes }}
+
+      current_version: ${{ steps.version.outputs.current_version }}
+
+      next_version: ${{ steps.version.outputs.next_version }}
+
+      next_tag: ${{ steps.version.outputs.next_tag }}
+
+      bump_type: ${{ steps.version.outputs.bump_type }}
+
+      release_scope: ${{ steps.version.outputs.release_scope }}
+
+      release_tag_prefix: ${{ steps.version.outputs.release_tag_prefix }}
+
+      commit_message: ${{ steps.version.outputs.commit_message }}
 
 
-  # ---------------------------------------------------------------------------
-  # Create tag and GitHub Release
-  # ---------------------------------------------------------------------------
+    steps:
+
+      # -----------------------------------------------------------------------
+      # Checkout
+      # -----------------------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      # -----------------------------------------------------------------------
+      # Get commit message from merged PR
+      # -----------------------------------------------------------------------
+      #
+      # We intentionally do NOT use:
+      #
+      #   PR title
+      #   PR description
+      #   squash PR title
+      #
+      # We get the actual commits belonging to the PR.
+      #
+      # The latest commit in the PR is used as the release commit.
+      #
+      # -----------------------------------------------------------------------
+
+      - name: Get PR commit message
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+        run: |
+          set -euo pipefail
+
+          echo "::group::Commit Information"
+
+          COMMIT_MESSAGE="$(
+            gh api \
+              "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+              --paginate \
+              --jq '.[].commit.message' |
+            tail -n 1
+          )"
+
+          if [[ -z "$COMMIT_MESSAGE" ]]; then
+            echo "::error::No commit message found for PR #${PR_NUMBER}."
+            exit 1
+          fi
+
+          # Use only the first line of the commit message.
+          COMMIT_MESSAGE="$(printf '%s\n' "$COMMIT_MESSAGE" | head -n 1)"
+
+          echo "Commit message: ${COMMIT_MESSAGE}"
+
+          echo "commit_message<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$COMMIT_MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          echo "::endgroup::"
+
+
+      # -----------------------------------------------------------------------
+      # Calculate semantic version
+      # -----------------------------------------------------------------------
+
+      - name: Calculate semantic version
+        id: version
+        shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ steps.commit.outputs.commit_message }}
+          DEFAULT_TAG_PREFIX: ${{ inputs.tag_prefix }}
+          INITIAL_VERSION: ${{ inputs.initial_version }}
+          BUMP_OVERRIDE: ${{ inputs.bump_override }}
+
+        run: |
+          set -euo pipefail
+
+          echo "::group::Conventional Commit"
+
+          echo "Commit message: ${COMMIT_MESSAGE}"
+
+          # -------------------------------------------------------------------
+          # Parse Conventional Commit
+          #
+          # Supported:
+          #
+          # feat(workflow): description
+          # fix(workflow): description
+          # feat(workflow)!: breaking change
+          # feat: common feature
+          # fix: common fix
+          #
+          # -------------------------------------------------------------------
+
+          COMMIT_TYPE=""
+          COMMIT_SCOPE=""
+          BREAKING="false"
+
+          if [[ "$COMMIT_MESSAGE" =~ ^([a-zA-Z]+)(\(([a-zA-Z0-9._-]+)\))?(!)?:[[:space:]]*(.+)$ ]]; then
+
+            COMMIT_TYPE="${BASH_REMATCH[1]}"
+            COMMIT_SCOPE="${BASH_REMATCH[3]:-}"
+
+            if [[ -n "${BASH_REMATCH[4]:-}" ]]; then
+              BREAKING="true"
+            fi
+
+          else
+
+            echo "::notice::Commit does not follow Conventional Commit format."
+            echo "::notice::Received: ${COMMIT_MESSAGE}"
+            echo "::notice::No release will be created."
+
+            {
+              echo "has_changes=false"
+              echo "current_version=$INITIAL_VERSION"
+              echo "next_version=$INITIAL_VERSION"
+              echo "next_tag=${DEFAULT_TAG_PREFIX}${INITIAL_VERSION}"
+              echo "bump_type=none"
+              echo "release_scope="
+              echo "release_tag_prefix=${DEFAULT_TAG_PREFIX}"
+              echo "commit_message<<EOF"
+              echo "$COMMIT_MESSAGE"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+
+            exit 0
+
+          fi
+
+          echo "Type     : ${COMMIT_TYPE}"
+          echo "Scope    : ${COMMIT_SCOPE:-none}"
+          echo "Breaking : ${BREAKING}"
+
+          echo "::endgroup::"
+
+
+          # -------------------------------------------------------------------
+          # Determine release stream
+          # -------------------------------------------------------------------
+
+          if [[ -n "$COMMIT_SCOPE" ]]; then
+
+            RELEASE_SCOPE="$COMMIT_SCOPE"
+            RELEASE_TAG_PREFIX="${COMMIT_SCOPE}-${DEFAULT_TAG_PREFIX}"
+
+          else
+
+            RELEASE_SCOPE=""
+            RELEASE_TAG_PREFIX="$DEFAULT_TAG_PREFIX"
+
+          fi
+
+
+          echo "::group::Release Stream"
+
+          echo "Release scope : ${RELEASE_SCOPE:-default}"
+          echo "Tag prefix    : ${RELEASE_TAG_PREFIX}"
+
+          echo "::endgroup::"
+
+
+          # -------------------------------------------------------------------
+          # Find latest tag for this release stream
+          # -------------------------------------------------------------------
+
+          LAST_TAG=$(
+            git tag --list "${RELEASE_TAG_PREFIX}[0-9]*" \
+              --sort=-v:refname |
+            head -n 1 || true
+          )
+
+
+          # -------------------------------------------------------------------
+          # Determine current version
+          # -------------------------------------------------------------------
+
+          if [[ -z "$LAST_TAG" ]]; then
+
+            CURRENT_VERSION="$INITIAL_VERSION"
+
+            echo "::notice::No previous tag found."
+            echo "::notice::Starting from ${INITIAL_VERSION}."
+
+          else
+
+            CURRENT_VERSION="${LAST_TAG#"$RELEASE_TAG_PREFIX"}"
+
+          fi
+
+
+          echo "::group::Current Release"
+
+          echo "Latest tag     : ${LAST_TAG:-none}"
+          echo "Current version: ${CURRENT_VERSION}"
+
+          echo "::endgroup::"
+
+
+          # -------------------------------------------------------------------
+          # Determine bump
+          # -------------------------------------------------------------------
+
+          HAS_CHANGES="true"
+
+          if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
+
+            case "$BUMP_OVERRIDE" in
+
+              major|minor|patch)
+                BUMP="$BUMP_OVERRIDE"
+                ;;
+
+              *)
+                echo "::error::Invalid bump_override: ${BUMP_OVERRIDE}"
+                exit 1
+                ;;
+
+            esac
+
+          elif [[ "$BREAKING" == "true" ]]; then
+
+            BUMP="major"
+
+          elif [[ "$COMMIT_TYPE" == "feat" ]]; then
+
+            BUMP="minor"
+
+          elif [[ "$COMMIT_TYPE" == "fix" ]]; then
+
+            BUMP="patch"
+
+          else
+
+            echo "::notice::Commit type '${COMMIT_TYPE}' does not trigger a release."
+
+            HAS_CHANGES="false"
+            BUMP="none"
+
+          fi
+
+
+          # -------------------------------------------------------------------
+          # No release required
+          # -------------------------------------------------------------------
+
+          if [[ "$HAS_CHANGES" == "false" ]]; then
+
+            {
+              echo "has_changes=false"
+              echo "current_version=$CURRENT_VERSION"
+              echo "next_version=$CURRENT_VERSION"
+              echo "next_tag=${RELEASE_TAG_PREFIX}${CURRENT_VERSION}"
+              echo "bump_type=none"
+              echo "release_scope=$RELEASE_SCOPE"
+              echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
+              echo "commit_message<<EOF"
+              echo "$COMMIT_MESSAGE"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+
+            exit 0
+
+          fi
+
+
+          # -------------------------------------------------------------------
+          # Calculate next semantic version
+          # -------------------------------------------------------------------
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+
+
+          if ! [[ "$MAJOR" =~ ^[0-9]+$ &&
+                  "$MINOR" =~ ^[0-9]+$ &&
+                  "$PATCH" =~ ^[0-9]+$ ]]; then
+
+            echo "::error::Invalid semantic version: ${CURRENT_VERSION}"
+            exit 1
+
+          fi
+
+
+          case "$BUMP" in
+
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+
+          esac
+
+
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          NEXT_TAG="${RELEASE_TAG_PREFIX}${NEXT_VERSION}"
+
+
+          # -------------------------------------------------------------------
+          # Outputs
+          # -------------------------------------------------------------------
+
+          {
+            echo "has_changes=true"
+            echo "current_version=$CURRENT_VERSION"
+            echo "next_version=$NEXT_VERSION"
+            echo "next_tag=$NEXT_TAG"
+            echo "bump_type=$BUMP"
+            echo "release_scope=$RELEASE_SCOPE"
+            echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
+            echo "commit_message<<EOF"
+            echo "$COMMIT_MESSAGE"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+
+          # -------------------------------------------------------------------
+          # Summary
+          # -------------------------------------------------------------------
+
+          {
+            echo "## Release Calculation"
+            echo
+            echo "| Property | Value |"
+            echo "|---|---|"
+            echo "| Commit | ${COMMIT_MESSAGE} |"
+            echo "| Type | ${COMMIT_TYPE} |"
+            echo "| Scope | ${COMMIT_SCOPE:-none} |"
+            echo "| Bump | ${BUMP} |"
+            echo "| Previous tag | ${LAST_TAG:-none} |"
+            echo "| Current version | ${CURRENT_VERSION} |"
+            echo "| Next version | ${NEXT_VERSION} |"
+            echo "| Next tag | ${NEXT_TAG} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  # ============================================================================
+  # JOB 2 - Create Release
+  # ============================================================================
 
   release:
 
     name: Create Release
 
-    needs: version
+    needs: calculate-version
 
-    if: needs.version.outputs.has_changes == 'true'
+    # Only create a release when the commit requires one.
+    if: needs.calculate-version.outputs.has_changes == 'true'
 
     runs-on: ubuntu-latest
 
@@ -126,7 +556,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout repository
+      # Checkout main
       # -----------------------------------------------------------------------
 
       - name: Checkout repository
@@ -146,15 +576,15 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Create annotated tag
+      # Create tag
       # -----------------------------------------------------------------------
 
       - name: Create annotated tag
         id: tag
         shell: bash
         env:
-          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
-          NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+          NEXT_TAG: ${{ needs.calculate-version.outputs.next_tag }}
+          NEXT_VERSION: ${{ needs.calculate-version.outputs.next_version }}
           DRY_RUN: ${{ inputs.dry_run }}
 
         run: |
@@ -164,23 +594,29 @@ jobs:
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
 
           echo "::group::Release Information"
-          echo "Commit      : ${{ inputs.commit_message }}"
-          echo "Scope       : ${{ needs.version.outputs.release_scope || 'repo-wide' }}"
-          echo "Bump        : ${{ needs.version.outputs.bump_type }}"
-          echo "Version     : ${NEXT_VERSION}"
-          echo "Tag         : ${NEXT_TAG}"
+
+          echo "Commit  : ${{ needs.calculate-version.outputs.commit_message }}"
+          echo "Scope   : ${{ needs.calculate-version.outputs.release_scope || 'repo-wide' }}"
+          echo "Bump    : ${{ needs.calculate-version.outputs.bump_type }}"
+          echo "Version : ${NEXT_VERSION}"
+          echo "Tag     : ${NEXT_TAG}"
+
           echo "::endgroup::"
+
 
           if [[ "$DRY_RUN" == "true" ]]; then
             echo "::notice::Dry run - tag ${NEXT_TAG} would be created."
             exit 0
           fi
 
+
           # Prevent duplicate tag creation.
+
           if git rev-parse "$NEXT_TAG" >/dev/null 2>&1; then
             echo "::error::Tag already exists: ${NEXT_TAG}"
             exit 1
           fi
+
 
           git tag -a "$NEXT_TAG" \
             -m "Release $NEXT_TAG" \
@@ -210,13 +646,16 @@ jobs:
             --generate-notes
           )
 
+
           if [[ "$DRAFT" == "true" ]]; then
             ARGS+=(--draft)
           fi
 
+
           if [[ "$PRERELEASE" == "true" ]]; then
             ARGS+=(--prerelease)
           fi
+
 
           gh release create "${ARGS[@]}"
 
@@ -231,10 +670,10 @@ jobs:
           {
             echo "## Release Summary"
             echo
-            echo "- Commit: \`${{ inputs.commit_message }}\`"
-            echo "- Scope: \`${{ needs.version.outputs.release_scope || 'repo-wide' }}\`"
-            echo "- Bump: \`${{ needs.version.outputs.bump_type }}\`"
-            echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
-            echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
+            echo "- Commit: \`${{ needs.calculate-version.outputs.commit_message }}\`"
+            echo "- Scope: \`${{ needs.calculate-version.outputs.release_scope || 'repo-wide' }}\`"
+            echo "- Bump: \`${{ needs.calculate-version.outputs.bump_type }}\`"
+            echo "- Previous version: \`${{ needs.calculate-version.outputs.current_version }}\`"
+            echo "- Next version: \`${{ needs.calculate-version.outputs.next_version }}\`"
             echo "- Tag: \`${{ steps.tag.outputs.tag }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
