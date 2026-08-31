@@ -6,7 +6,7 @@ name: release-version
 #
 # VERSIONING SOURCE OF TRUTH
 # --------------------------
-# The commit message passed by release.yml is the ONLY source of truth.
+# The commit_message input is the ONLY source of truth for versioning.
 #
 # Examples:
 #
@@ -22,7 +22,7 @@ name: release-version
 #   feat: common feature
 #       -> v2.1.0
 #
-# PR title and PR description are NOT used for versioning.
+# PR title and PR description are NOT used.
 # -----------------------------------------------------------------------------
 
 on:
@@ -31,7 +31,7 @@ on:
     inputs:
 
       commit_message:
-        description: "Commit message used as the versioning source"
+        description: "Conventional Commit message used for versioning"
         required: true
         type: string
 
@@ -108,7 +108,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout repository so tags are available.
+      # Checkout repository so Git tags are available.
       # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -132,7 +132,7 @@ jobs:
           set -euo pipefail
 
           # ===================================================================
-          # STEP 1 - Get commit message
+          # STEP 1 - Get commit message supplied by release-workflow.yml
           # ===================================================================
 
           COMMIT_MESSAGE="$(echo "$COMMIT_MESSAGE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -141,24 +141,21 @@ jobs:
           echo "Commit message: ${COMMIT_MESSAGE}"
           echo "::endgroup::"
 
+          if [[ -z "$COMMIT_MESSAGE" ]]; then
+            echo "::error::Commit message is empty."
+            exit 1
+          fi
+
 
           # ===================================================================
           # STEP 2 - Parse Conventional Commit
-          #
-          # Supported:
-          #
-          # feat(workflow): description
-          # fix(workflow): description
-          # feat(workflow)!: description
-          # feat: description
-          #
           # ===================================================================
 
           COMMIT_TYPE=""
           COMMIT_SCOPE=""
           BREAKING="false"
 
-          if [[ "$COMMIT_MESSAGE" =~ ^([a-zA-Z]+)(\(([a-zA-Z0-9._-]+)\))?(!)?:[[:space:]]*(.+)$ ]]; then
+          if [[ "$COMMIT_MESSAGE" =~ ^([a-zA-Z]+)(\(([a-zA-Z0-9._/-]+)\))?(!)?:[[:space:]]*(.+)$ ]]; then
 
             COMMIT_TYPE="${BASH_REMATCH[1]}"
             COMMIT_SCOPE="${BASH_REMATCH[3]:-}"
@@ -238,22 +235,19 @@ jobs:
 
 
           # ===================================================================
-          # STEP 6 - Determine bump
+          # STEP 6 - Determine version bump
           # ===================================================================
 
           if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
 
             case "$BUMP_OVERRIDE" in
-
               major|minor|patch)
                 BUMP="$BUMP_OVERRIDE"
                 ;;
-
               *)
                 echo "::error::Invalid bump_override: ${BUMP_OVERRIDE}"
                 exit 1
                 ;;
-
             esac
 
           elif [[ "$BREAKING" == "true" ]]; then
@@ -299,7 +293,6 @@ jobs:
 
             echo "::error::Invalid semantic version: ${CURRENT_VERSION}"
             exit 1
-
           fi
 
 

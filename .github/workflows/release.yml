@@ -14,7 +14,7 @@ on:
     inputs:
 
       commit_message:
-        description: "Commit message used for versioning"
+        description: "Conventional Commit message used for versioning"
         required: true
         type: string
 
@@ -62,7 +62,7 @@ on:
         value: ${{ jobs.release.outputs.released_version }}
 
       released_tag:
-        description: "Released tag"
+        description: "Released Git tag"
         value: ${{ jobs.release.outputs.released_tag }}
 
       bump_type:
@@ -119,7 +119,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout main
+      # Checkout main.
       # -----------------------------------------------------------------------
 
       - name: Checkout repository
@@ -129,7 +129,7 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Configure Git
+      # Configure Git.
       # -----------------------------------------------------------------------
 
       - name: Configure Git identity
@@ -139,7 +139,7 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Create annotated tag
+      # Create annotated tag.
       # -----------------------------------------------------------------------
 
       - name: Create annotated tag
@@ -183,7 +183,7 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Create GitHub Release
+      # Create GitHub Release.
       # -----------------------------------------------------------------------
 
       - name: Create GitHub Release
@@ -215,11 +215,11 @@ jobs:
 
 
       # -----------------------------------------------------------------------
-      # Summary
+      # Summary.
       # -----------------------------------------------------------------------
 
       - name: Release summary
-        if: always()
+        if: always
         run: |
           {
             echo "## Release Summary"
