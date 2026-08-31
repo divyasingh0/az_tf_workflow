@@ -1,59 +1,24 @@
-
-name: release-trigger
+name: Release Trigger
 
 # -----------------------------------------------------------------------------
-# Entry point for the release process.
+# Trigger release after a pull request is merged into main.
 #
-# The release stream is determined automatically from the Conventional
-# Commit scope.
+# VERSIONING
+# ----------
+# The final commit on main is evaluated by version.yml.
 #
-# Examples:
-#
-#   feat(workflow): add release automation
-#       -> workflow-v2.1.0
-#
-#   fix(release): fix release notes
-#       -> release-v2.0.1
-#
-#   feat: update common configuration
-#       -> v2.1.0
-#
-# If no Conventional Commit scope is present, the default "v" stream is used.
-#
-# Only ONE release stream is processed per workflow execution.
+# RELEASE NOTES
+# -------------
+# PR metadata comes directly from the pull_request event.
+# PR title is passed ONLY to release.yml for release notes.
 # -----------------------------------------------------------------------------
 
 on:
-
-  # ---------------------------------------------------------------------------
-  # Automatic release
-  # ---------------------------------------------------------------------------
-  push:
+  pull_request:
     branches:
       - main
-
-  # ---------------------------------------------------------------------------
-  # Manual release
-  # ---------------------------------------------------------------------------
-  workflow_dispatch:
-    inputs:
-
-      bump_override:
-        description: "Version bump to apply"
-        required: false
-        type: choice
-        options:
-          - auto
-          - patch
-          - minor
-          - major
-        default: auto
-
-      dry_run:
-        description: "Preview release without creating a tag or publishing"
-        required: false
-        type: boolean
-        default: false
+    types:
+      - closed
 
 
 # -----------------------------------------------------------------------------
@@ -61,7 +26,14 @@ on:
 # -----------------------------------------------------------------------------
 permissions:
   contents: write
-  pull-requests: read
+
+
+# -----------------------------------------------------------------------------
+# Concurrency
+# -----------------------------------------------------------------------------
+concurrency:
+  group: release-${{ github.repository }}-main
+  cancel-in-progress: false
 
 
 jobs:
@@ -70,26 +42,43 @@ jobs:
   # Release
   # ============================================================================
   release:
-    name: Create Release
+
+    name: Release
+
+    # Only run when the PR was actually merged.
+    if: github.event.pull_request.merged == true
 
     uses: ./.github/workflows/release.yml
 
     with:
-      # "v" is the default stream.
-      #
-      # release.yml will automatically change this to:
-      #
-      #   workflow-v
-      #   release-v
-      #   v
-      #
-      # based on the Conventional Commit scope.
-      tag_prefix: v
 
-      initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
+      # -----------------------------------------------------------------------
+      # Versioning configuration
+      # -----------------------------------------------------------------------
+      tag_prefix: "v"
+      initial_version: "0.1.0"
+      bump_override: "auto"
 
-      bump_override: ${{ inputs.bump_override || 'auto' }}
+      # -----------------------------------------------------------------------
+      # PR information
+      #
+      # IMPORTANT:
+      # These are ONLY used for release notes.
+      # They are NOT used by version.yml.
+      # -----------------------------------------------------------------------
+      pr_title: ${{ github.event.pull_request.title }}
+      pr_number: ${{ github.event.pull_request.number }}
+      pr_url: ${{ github.event.pull_request.html_url }}
+      pr_author: ${{ github.event.pull_request.user.login }}
 
-      dry_run: ${{ inputs.dry_run || false }}
+      # -----------------------------------------------------------------------
+      # Release configuration
+      # -----------------------------------------------------------------------
+      dry_run: false
+      draft: false
+      prerelease: false
+
+      # Empty means use the commit checked out by the workflow.
+      target_commitish: ""
 
     secrets: inherit
