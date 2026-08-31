@@ -11,20 +11,6 @@ name: Release Trigger
 # The Conventional Commit message is the ONLY source used for versioning.
 #
 # PR title, PR description and PR metadata are NOT used.
-#
-# Examples:
-#
-#   feat(workflow): add feature
-#       -> workflow-v2.1.0
-#
-#   fix(workflow): fix issue
-#       -> workflow-v2.1.1
-#
-#   feat(workflow)!: breaking change
-#       -> workflow-v3.0.0
-#
-#   chore(workflow): update documentation
-#       -> No release
 # -----------------------------------------------------------------------------
 
 on:
@@ -43,7 +29,8 @@ permissions:
 # -----------------------------------------------------------------------------
 # Concurrency
 #
-# Prevent multiple release runs from creating conflicting tags.
+# Concurrency is controlled ONLY at the caller workflow level.
+# Do not define the same concurrency group in release.yml.
 # -----------------------------------------------------------------------------
 concurrency:
   group: release-${{ github.repository }}-main
@@ -78,4 +65,3 @@ jobs:
       prerelease: false
 
     secrets: inherit
-
