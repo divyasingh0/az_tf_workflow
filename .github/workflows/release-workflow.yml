@@ -2,34 +2,47 @@
 name: Release Trigger
 
 # -----------------------------------------------------------------------------
-# Trigger release when a pull request is merged into main.
+# Trigger release after a PR is merged into main.
 #
 # VERSIONING
 # ----------
-# The commit message from the merged PR is passed to release.yml.
+# The Conventional Commit message from the merged PR is used for versioning.
 #
-# The PR title is NOT used.
-# The PR description is NOT used.
+# PR TITLE
+# --------
+# NOT used.
+#
+# PR DESCRIPTION
+# -------------
+# NOT used.
 #
 # Example:
 #
 #   git commit -m "feat(workflow): add release automation"
 #
-#       ↓
+#                     ↓
 #
-#   PR merged
+#                   PR
 #
-#       ↓
+#                     ↓
 #
-#   version.yml
+#                 PR merged
 #
-#       ↓
+#                     ↓
 #
-#   feat + workflow
+#          Get PR commits using GitHub API
 #
-#       ↓
+#                     ↓
 #
-#   workflow-v2.1.0
+#   feat(workflow): add release automation
+#
+#                     ↓
+#
+#              version.yml
+#
+#                     ↓
+#
+#              workflow-v2.1.0
 # -----------------------------------------------------------------------------
 
 on:
@@ -46,7 +59,7 @@ permissions:
 
 
 # -----------------------------------------------------------------------------
-# Only one release is allowed to run at a time.
+# Prevent two releases from running at the same time.
 # -----------------------------------------------------------------------------
 
 concurrency:
@@ -56,27 +69,118 @@ concurrency:
 
 jobs:
 
+  # ============================================================================
+  # Get commit message from merged PR
+  # ============================================================================
+
+  get-commit:
+
+    name: Get Commit Message
+
+    if: github.event.pull_request.merged == true
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      commit_message: ${{ steps.commit.outputs.commit_message }}
+
+    steps:
+
+      # -----------------------------------------------------------------------
+      # Get commits belonging to the merged PR.
+      # -----------------------------------------------------------------------
+
+      - name: Get merged PR commit
+        id: commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+
+        run: |
+          set -euo pipefail
+
+          echo "::group::Merged PR"
+          echo "PR Number: #${PR_NUMBER}"
+          echo "::endgroup::"
+
+
+          # Get all commits from the PR.
+          COMMITS=$(gh api \
+            --paginate \
+            "/repos/${REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[].commit.message')
+
+
+          if [[ -z "$COMMITS" ]]; then
+            echo "::error::No commits found in PR #${PR_NUMBER}."
+            exit 1
+          fi
+
+
+          echo "::group::PR Commits"
+          echo "$COMMITS"
+          echo "::endgroup::"
+
+
+          # -------------------------------------------------------------------
+          # Find the first Conventional Commit.
+          #
+          # We intentionally ignore:
+          # - PR title
+          # - PR description
+          # - merge commit message
+          #
+          # The commit message itself is the source of truth.
+          # -------------------------------------------------------------------
+
+          COMMIT_MESSAGE=""
+
+          while IFS= read -r MESSAGE; do
+
+            if [[ "$MESSAGE" =~ ^[a-zA-Z]+(\([a-zA-Z0-9._/-]+\))?!?:[[:space:]]+.+$ ]]; then
+              COMMIT_MESSAGE="$MESSAGE"
+              break
+            fi
+
+          done <<< "$COMMITS"
+
+
+          if [[ -z "$COMMIT_MESSAGE" ]]; then
+            echo "::error::No Conventional Commit found in PR #${PR_NUMBER}."
+            echo "::error::Expected format: feat(workflow): description"
+            exit 1
+          fi
+
+
+          echo "::notice::Versioning commit: ${COMMIT_MESSAGE}"
+
+
+          # Multiline-safe GitHub output.
+          {
+            echo "commit_message<<EOF"
+            echo "$COMMIT_MESSAGE"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+
+  # ============================================================================
+  # Release
+  # ============================================================================
+
   release:
 
     name: Release
 
-    # Only run after the PR was actually merged.
-    if: github.event.pull_request.merged == true
+    needs: get-commit
 
     uses: ./.github/workflows/release.yml
 
     with:
 
-      # -----------------------------------------------------------------------
-      # IMPORTANT:
-      #
-      # Use the commit message from the commit that GitHub created when the PR
-      # was merged.
-      #
-      # This is the only value used for version calculation.
-      # -----------------------------------------------------------------------
-
-      commit_message: ${{ github.event.pull_request.merge_commit_message }}
+      # The commit message found above is the ONLY versioning input.
+      commit_message: ${{ needs.get-commit.outputs.commit_message }}
 
       tag_prefix: "v"
 

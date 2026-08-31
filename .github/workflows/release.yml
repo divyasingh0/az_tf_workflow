@@ -4,8 +4,12 @@ name: Release
 # -----------------------------------------------------------------------------
 # Reusable release workflow.
 #
+# VERSIONING
+# ----------
 # The commit message is passed from release-workflow.yml.
 # version.yml is the single source of truth for version calculation.
+#
+# PR title and PR description are NOT used for versioning.
 # -----------------------------------------------------------------------------
 
 on:
@@ -14,7 +18,7 @@ on:
     inputs:
 
       commit_message:
-        description: "Commit message used for versioning"
+        description: "Conventional Commit message used for versioning"
         required: true
         type: string
 
@@ -54,7 +58,6 @@ on:
         type: boolean
         default: false
 
-
     outputs:
 
       released_version:
@@ -62,7 +65,7 @@ on:
         value: ${{ jobs.release.outputs.released_version }}
 
       released_tag:
-        description: "Released tag"
+        description: "Released Git tag"
         value: ${{ jobs.release.outputs.released_tag }}
 
       bump_type:
@@ -70,15 +73,19 @@ on:
         value: ${{ jobs.version.outputs.bump_type }}
 
 
+# -----------------------------------------------------------------------------
+# Permissions
+# -----------------------------------------------------------------------------
+
 permissions:
   contents: write
 
 
-jobs:
+# -----------------------------------------------------------------------------
+# Calculate version
+# -----------------------------------------------------------------------------
 
-  # ============================================================================
-  # Calculate version
-  # ============================================================================
+jobs:
 
   version:
 
@@ -95,9 +102,9 @@ jobs:
     secrets: inherit
 
 
-  # ============================================================================
+  # ---------------------------------------------------------------------------
   # Create tag and GitHub Release
-  # ============================================================================
+  # ---------------------------------------------------------------------------
 
   release:
 
@@ -119,7 +126,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout main
+      # Checkout repository
       # -----------------------------------------------------------------------
 
       - name: Checkout repository
