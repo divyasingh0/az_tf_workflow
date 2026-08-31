@@ -4,14 +4,19 @@ name: Release
 # -----------------------------------------------------------------------------
 # Reusable release workflow.
 #
-# version.yml calculates the version.
-# This workflow creates the Git tag and GitHub Release.
+# The commit message is passed from release-workflow.yml.
+# version.yml is the single source of truth for version calculation.
 # -----------------------------------------------------------------------------
 
 on:
   workflow_call:
 
     inputs:
+
+      commit_message:
+        description: "Commit message used for versioning"
+        required: true
+        type: string
 
       tag_prefix:
         description: "Default release tag prefix"
@@ -49,6 +54,7 @@ on:
         type: boolean
         default: false
 
+
     outputs:
 
       released_version:
@@ -73,6 +79,7 @@ jobs:
   # ============================================================================
   # Calculate version
   # ============================================================================
+
   version:
 
     name: Calculate Version
@@ -80,6 +87,7 @@ jobs:
     uses: ./.github/workflows/version.yml
 
     with:
+      commit_message: ${{ inputs.commit_message }}
       tag_prefix: ${{ inputs.tag_prefix }}
       initial_version: ${{ inputs.initial_version }}
       bump_override: ${{ inputs.bump_override }}
@@ -88,8 +96,9 @@ jobs:
 
 
   # ============================================================================
-  # Create tag and release
+  # Create tag and GitHub Release
   # ============================================================================
+
   release:
 
     name: Create Release
@@ -110,18 +119,19 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout exact commit
+      # Checkout main
       # -----------------------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
 
 
       # -----------------------------------------------------------------------
       # Configure Git
       # -----------------------------------------------------------------------
+
       - name: Configure Git identity
         run: |
           git config user.name "github-actions[bot]"
@@ -131,6 +141,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Create annotated tag
       # -----------------------------------------------------------------------
+
       - name: Create annotated tag
         id: tag
         shell: bash
@@ -145,12 +156,12 @@ jobs:
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
 
-          echo "::group::Release"
-          echo "Commit      : ${GITHUB_SHA}"
+          echo "::group::Release Information"
+          echo "Commit      : ${{ inputs.commit_message }}"
+          echo "Scope       : ${{ needs.version.outputs.release_scope || 'repo-wide' }}"
+          echo "Bump        : ${{ needs.version.outputs.bump_type }}"
           echo "Version     : ${NEXT_VERSION}"
           echo "Tag         : ${NEXT_TAG}"
-          echo "Bump        : ${{ needs.version.outputs.bump_type }}"
-          echo "Scope       : ${{ needs.version.outputs.release_scope || 'repo-wide' }}"
           echo "::endgroup::"
 
           if [[ "$DRY_RUN" == "true" ]]; then
@@ -166,7 +177,7 @@ jobs:
 
           git tag -a "$NEXT_TAG" \
             -m "Release $NEXT_TAG" \
-            "$GITHUB_SHA"
+            HEAD
 
           git push origin "$NEXT_TAG"
 
@@ -174,6 +185,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Create GitHub Release
       # -----------------------------------------------------------------------
+
       - name: Create GitHub Release
         if: inputs.dry_run == false
         env:
@@ -205,13 +217,14 @@ jobs:
       # -----------------------------------------------------------------------
       # Summary
       # -----------------------------------------------------------------------
+
       - name: Release summary
         if: always()
         run: |
           {
             echo "## Release Summary"
             echo
-            echo "- Commit: \`${{ needs.version.outputs.commit_message }}\`"
+            echo "- Commit: \`${{ inputs.commit_message }}\`"
             echo "- Scope: \`${{ needs.version.outputs.release_scope || 'repo-wide' }}\`"
             echo "- Bump: \`${{ needs.version.outputs.bump_type }}\`"
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"

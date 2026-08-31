@@ -6,24 +6,34 @@ name: release-version
 #
 # VERSIONING SOURCE OF TRUTH
 # --------------------------
-# ONLY the commit message is used for versioning.
+# The commit message passed by release.yml is the ONLY source of truth.
 #
-# Example:
+# Examples:
 #
-#   git commit -m "feat(workflow): add release automation"
+#   feat(workflow): add release automation
+#       -> workflow-v2.1.0
 #
-#   -> Type  : feat
-#   -> Scope : workflow
-#   -> Bump  : minor
-#   -> Tag   : workflow-v2.1.0
+#   fix(workflow): fix release workflow
+#       -> workflow-v2.0.1
 #
-# No PR title or PR metadata is used.
+#   feat(workflow)!: breaking change
+#       -> workflow-v3.0.0
+#
+#   feat: common feature
+#       -> v2.1.0
+#
+# PR title and PR description are NOT used for versioning.
 # -----------------------------------------------------------------------------
 
 on:
   workflow_call:
 
     inputs:
+
+      commit_message:
+        description: "Commit message used as the versioning source"
+        required: true
+        type: string
 
       tag_prefix:
         description: "Default tag prefix when commit has no scope"
@@ -73,10 +83,6 @@ on:
         description: "Release tag prefix"
         value: ${{ jobs.compute-version.outputs.release_tag_prefix }}
 
-      commit_message:
-        description: "Commit message used for versioning"
-        value: ${{ jobs.compute-version.outputs.commit_message }}
-
 
 permissions:
   contents: read
@@ -98,27 +104,26 @@ jobs:
       has_changes: ${{ steps.semver.outputs.has_changes }}
       release_scope: ${{ steps.semver.outputs.release_scope }}
       release_tag_prefix: ${{ steps.semver.outputs.release_tag_prefix }}
-      commit_message: ${{ steps.semver.outputs.commit_message }}
 
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout the exact commit that triggered the workflow.
+      # Checkout repository so tags are available.
       # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
 
 
       # -----------------------------------------------------------------------
-      # Read commit and calculate version.
+      # Calculate semantic version.
       # -----------------------------------------------------------------------
       - name: Calculate semantic version
         id: semver
         shell: bash
         env:
+          COMMIT_MESSAGE: ${{ inputs.commit_message }}
           DEFAULT_TAG_PREFIX: ${{ inputs.tag_prefix }}
           INITIAL_VERSION: ${{ inputs.initial_version }}
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
@@ -127,24 +132,26 @@ jobs:
           set -euo pipefail
 
           # ===================================================================
-          # Get the ONE commit message
+          # STEP 1 - Get commit message
           # ===================================================================
 
-          COMMIT_MESSAGE="$(git log -1 --pretty=format:"%s")"
+          COMMIT_MESSAGE="$(echo "$COMMIT_MESSAGE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
           echo "::group::Commit Information"
-          echo "Commit SHA     : ${GITHUB_SHA}"
-          echo "Commit message : ${COMMIT_MESSAGE}"
+          echo "Commit message: ${COMMIT_MESSAGE}"
           echo "::endgroup::"
 
 
           # ===================================================================
-          # Parse Conventional Commit
+          # STEP 2 - Parse Conventional Commit
           #
-          # feat(workflow): add release automation
-          #  │       │
-          #  │       └── scope
-          #  └────────── type
+          # Supported:
+          #
+          # feat(workflow): description
+          # fix(workflow): description
+          # feat(workflow)!: description
+          # feat: description
+          #
           # ===================================================================
 
           COMMIT_TYPE=""
@@ -163,7 +170,8 @@ jobs:
           else
 
             echo "::error::Commit does not follow Conventional Commit format."
-            echo "::error::Expected: feat(workflow): description"
+            echo "::error::Expected format: feat(workflow): description"
+            echo "::error::Received: ${COMMIT_MESSAGE}"
 
             exit 1
 
@@ -178,7 +186,7 @@ jobs:
 
 
           # ===================================================================
-          # Determine tag stream from scope
+          # STEP 3 - Determine release stream
           # ===================================================================
 
           if [[ -n "$COMMIT_SCOPE" ]]; then
@@ -194,8 +202,14 @@ jobs:
           fi
 
 
+          echo "::group::Release Stream"
+          echo "Release scope: ${RELEASE_SCOPE:-default}"
+          echo "Tag prefix   : ${RELEASE_TAG_PREFIX}"
+          echo "::endgroup::"
+
+
           # ===================================================================
-          # Find latest tag for THIS scope
+          # STEP 4 - Find latest tag for this release stream
           # ===================================================================
 
           LAST_TAG=$(
@@ -206,7 +220,7 @@ jobs:
 
 
           # ===================================================================
-          # Determine current version
+          # STEP 5 - Determine current version
           # ===================================================================
 
           if [[ -z "$LAST_TAG" ]]; then
@@ -224,19 +238,22 @@ jobs:
 
 
           # ===================================================================
-          # Determine version bump
+          # STEP 6 - Determine bump
           # ===================================================================
 
           if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
 
             case "$BUMP_OVERRIDE" in
+
               major|minor|patch)
                 BUMP="$BUMP_OVERRIDE"
                 ;;
+
               *)
                 echo "::error::Invalid bump_override: ${BUMP_OVERRIDE}"
                 exit 1
                 ;;
+
             esac
 
           elif [[ "$BREAKING" == "true" ]]; then
@@ -253,7 +270,7 @@ jobs:
 
           else
 
-            echo "::notice::Commit type '${COMMIT_TYPE}' does not create a release."
+            echo "::notice::Commit type '${COMMIT_TYPE}' does not trigger a release."
 
             {
               echo "has_changes=false"
@@ -263,9 +280,6 @@ jobs:
               echo "bump_type=none"
               echo "release_scope=$RELEASE_SCOPE"
               echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
-              echo "commit_message<<EOF"
-              echo "$COMMIT_MESSAGE"
-              echo "EOF"
             } >> "$GITHUB_OUTPUT"
 
             exit 0
@@ -274,11 +288,10 @@ jobs:
 
 
           # ===================================================================
-          # Calculate next version
+          # STEP 7 - Calculate next version
           # ===================================================================
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-
 
           if ! [[ "$MAJOR" =~ ^[0-9]+$ &&
                   "$MINOR" =~ ^[0-9]+$ &&
@@ -315,7 +328,7 @@ jobs:
 
 
           # ===================================================================
-          # Outputs
+          # STEP 8 - Outputs
           # ===================================================================
 
           {
@@ -326,14 +339,11 @@ jobs:
             echo "bump_type=$BUMP"
             echo "release_scope=$RELEASE_SCOPE"
             echo "release_tag_prefix=$RELEASE_TAG_PREFIX"
-            echo "commit_message<<EOF"
-            echo "$COMMIT_MESSAGE"
-            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
 
           # ===================================================================
-          # Summary
+          # STEP 9 - Summary
           # ===================================================================
 
           {
@@ -341,11 +351,13 @@ jobs:
             echo
             echo "| Property | Value |"
             echo "|---|---|"
-            echo "| Commit | ${COMMIT_MESSAGE} |"
-            echo "| Type | ${COMMIT_TYPE} |"
-            echo "| Scope | ${COMMIT_SCOPE:-none} |"
-            echo "| Bump | ${BUMP} |"
-            echo "| Previous Version | ${CURRENT_VERSION} |"
-            echo "| Next Version | ${NEXT_VERSION} |"
-            echo "| Next Tag | ${NEXT_TAG} |"
+            echo "| Commit message | ${COMMIT_MESSAGE} |"
+            echo "| Commit type | ${COMMIT_TYPE} |"
+            echo "| Commit scope | ${COMMIT_SCOPE:-none} |"
+            echo "| Release tag prefix | ${RELEASE_TAG_PREFIX} |"
+            echo "| Previous tag | ${LAST_TAG:-none} |"
+            echo "| Current version | ${CURRENT_VERSION} |"
+            echo "| Bump type | ${BUMP} |"
+            echo "| Next version | ${NEXT_VERSION} |"
+            echo "| Next tag | ${NEXT_TAG} |"
           } >> "$GITHUB_STEP_SUMMARY"
