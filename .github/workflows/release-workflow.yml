@@ -2,15 +2,9 @@
 name: Release Trigger
 
 # -----------------------------------------------------------------------------
-# Automatically trigger release when a commit is pushed to main.
+# Trigger release when a commit reaches main.
 #
-# VERSIONING
-# ----------
-# version.yml evaluates the commit that actually reached main.
-#
-# The Conventional Commit message is the ONLY source used for versioning.
-#
-# PR title, PR description and PR metadata are NOT used.
+# The commit message is the ONLY source of truth for versioning.
 # -----------------------------------------------------------------------------
 
 on:
@@ -19,18 +13,12 @@ on:
       - main
 
 
-# -----------------------------------------------------------------------------
-# Permissions
-# -----------------------------------------------------------------------------
 permissions:
   contents: write
 
 
 # -----------------------------------------------------------------------------
-# Concurrency
-#
-# Concurrency is controlled ONLY at the caller workflow level.
-# Do not define the same concurrency group in release.yml.
+# Only one release can run at a time for main.
 # -----------------------------------------------------------------------------
 concurrency:
   group: release-${{ github.repository }}-main
@@ -39,9 +27,6 @@ concurrency:
 
 jobs:
 
-  # ============================================================================
-  # Release
-  # ============================================================================
   release:
 
     name: Release
@@ -50,18 +35,16 @@ jobs:
 
     with:
 
-      # -----------------------------------------------------------------------
-      # Versioning configuration
-      # -----------------------------------------------------------------------
       tag_prefix: "v"
+
       initial_version: "0.1.0"
+
       bump_override: "auto"
 
-      # -----------------------------------------------------------------------
-      # Release configuration
-      # -----------------------------------------------------------------------
       dry_run: false
+
       draft: false
+
       prerelease: false
 
     secrets: inherit
