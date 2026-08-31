@@ -1,24 +1,36 @@
+
 name: Release Trigger
 
 # -----------------------------------------------------------------------------
-# Trigger release after a pull request is merged into main.
+# Automatically trigger release when a commit is pushed to main.
 #
 # VERSIONING
 # ----------
-# The final commit on main is evaluated by version.yml.
+# version.yml evaluates the commit that actually reached main.
 #
-# RELEASE NOTES
-# -------------
-# PR metadata comes directly from the pull_request event.
-# PR title is passed ONLY to release.yml for release notes.
+# The Conventional Commit message is the ONLY source used for versioning.
+#
+# PR title, PR description and PR metadata are NOT used.
+#
+# Examples:
+#
+#   feat(workflow): add feature
+#       -> workflow-v2.1.0
+#
+#   fix(workflow): fix issue
+#       -> workflow-v2.1.1
+#
+#   feat(workflow)!: breaking change
+#       -> workflow-v3.0.0
+#
+#   chore(workflow): update documentation
+#       -> No release
 # -----------------------------------------------------------------------------
 
 on:
-  pull_request:
+  push:
     branches:
       - main
-    types:
-      - closed
 
 
 # -----------------------------------------------------------------------------
@@ -30,6 +42,8 @@ permissions:
 
 # -----------------------------------------------------------------------------
 # Concurrency
+#
+# Prevent multiple release runs from creating conflicting tags.
 # -----------------------------------------------------------------------------
 concurrency:
   group: release-${{ github.repository }}-main
@@ -45,9 +59,6 @@ jobs:
 
     name: Release
 
-    # Only run when the PR was actually merged.
-    if: github.event.pull_request.merged == true
-
     uses: ./.github/workflows/release.yml
 
     with:
@@ -60,25 +71,11 @@ jobs:
       bump_override: "auto"
 
       # -----------------------------------------------------------------------
-      # PR information
-      #
-      # IMPORTANT:
-      # These are ONLY used for release notes.
-      # They are NOT used by version.yml.
-      # -----------------------------------------------------------------------
-      pr_title: ${{ github.event.pull_request.title }}
-      pr_number: ${{ github.event.pull_request.number }}
-      pr_url: ${{ github.event.pull_request.html_url }}
-      pr_author: ${{ github.event.pull_request.user.login }}
-
-      # -----------------------------------------------------------------------
       # Release configuration
       # -----------------------------------------------------------------------
       dry_run: false
       draft: false
       prerelease: false
 
-      # Empty means use the commit checked out by the workflow.
-      target_commitish: ""
-
     secrets: inherit
+
