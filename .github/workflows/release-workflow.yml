@@ -2,24 +2,53 @@
 name: Release Trigger
 
 # -----------------------------------------------------------------------------
-# Trigger release when a commit reaches main.
+# Trigger release when a pull request is merged into main.
 #
-# The commit message is the ONLY source of truth for versioning.
+# VERSIONING
+# ----------
+# The commit message from the merged PR is passed to release.yml.
+#
+# The PR title is NOT used.
+# The PR description is NOT used.
+#
+# Example:
+#
+#   git commit -m "feat(workflow): add release automation"
+#
+#       ↓
+#
+#   PR merged
+#
+#       ↓
+#
+#   version.yml
+#
+#       ↓
+#
+#   feat + workflow
+#
+#       ↓
+#
+#   workflow-v2.1.0
 # -----------------------------------------------------------------------------
 
 on:
-  push:
+  pull_request:
     branches:
       - main
+    types:
+      - closed
 
 
 permissions:
   contents: write
+  pull-requests: read
 
 
 # -----------------------------------------------------------------------------
-# Only one release can run at a time for main.
+# Only one release is allowed to run at a time.
 # -----------------------------------------------------------------------------
+
 concurrency:
   group: release-${{ github.repository }}-main
   cancel-in-progress: false
@@ -31,9 +60,23 @@ jobs:
 
     name: Release
 
+    # Only run after the PR was actually merged.
+    if: github.event.pull_request.merged == true
+
     uses: ./.github/workflows/release.yml
 
     with:
+
+      # -----------------------------------------------------------------------
+      # IMPORTANT:
+      #
+      # Use the commit message from the commit that GitHub created when the PR
+      # was merged.
+      #
+      # This is the only value used for version calculation.
+      # -----------------------------------------------------------------------
+
+      commit_message: ${{ github.event.pull_request.merge_commit_message }}
 
       tag_prefix: "v"
 
