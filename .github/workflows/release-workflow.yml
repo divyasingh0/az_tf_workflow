@@ -1,17 +1,30 @@
+
 name: release-trigger
 
+# -----------------------------------------------------------------------------
 # Entry point for the release process.
-# This workflow triggers the reusable release workflow on:
-#   - Push to main
-#   - Manual workflow dispatch
 #
-# Two independent release streams are maintained:
-#   - workflow-vX.Y.Z
-#   - release-vX.Y.Z
+# The release stream is determined automatically from the Conventional
+# Commit scope.
 #
-# All release logic is handled by .github/workflows/release.yml.
+# Examples:
+#
+#   feat(workflow): add release automation
+#       -> workflow-v2.1.0
+#
+#   fix(release): fix release notes
+#       -> release-v2.0.1
+#
+#   feat: update common configuration
+#       -> v2.1.0
+#
+# If no Conventional Commit scope is present, the default "v" stream is used.
+#
+# Only ONE release stream is processed per workflow execution.
+# -----------------------------------------------------------------------------
 
 on:
+
   # ---------------------------------------------------------------------------
   # Automatic release
   # ---------------------------------------------------------------------------
@@ -24,23 +37,28 @@ on:
   # ---------------------------------------------------------------------------
   workflow_dispatch:
     inputs:
+
       bump_override:
         description: "Version bump to apply"
+        required: false
         type: choice
         options:
           - auto
           - patch
           - minor
           - major
+        default: auto
 
       dry_run:
         description: "Preview release without creating a tag or publishing"
+        required: false
         type: boolean
+        default: false
 
 
-# -------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Permissions
-# -------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 permissions:
   contents: write
   pull-requests: read
@@ -49,32 +67,29 @@ permissions:
 jobs:
 
   # ============================================================================
-  # Workflow Release
-  # ============================================================================
-  workflow-release:
-    name: Create Workflow Release
-    uses: ./.github/workflows/release.yml
-
-    with:
-      tag_prefix: workflow-v
-      initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
-      bump_override: ${{ inputs.bump_override || 'auto' }}
-      dry_run: ${{ inputs.dry_run || false }}
-
-    secrets: inherit
-
-
-  # ============================================================================
   # Release
   # ============================================================================
   release:
     name: Create Release
+
     uses: ./.github/workflows/release.yml
 
     with:
-      tag_prefix: release-v
+      # "v" is the default stream.
+      #
+      # release.yml will automatically change this to:
+      #
+      #   workflow-v
+      #   release-v
+      #   v
+      #
+      # based on the Conventional Commit scope.
+      tag_prefix: v
+
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
+
       bump_override: ${{ inputs.bump_override || 'auto' }}
+
       dry_run: ${{ inputs.dry_run || false }}
 
     secrets: inherit
