@@ -1,3 +1,4 @@
+
 name: release-version
 
 # -----------------------------------------------------------------------------
@@ -5,7 +6,7 @@ name: release-version
 #
 # VERSIONING STRATEGY
 # -------------------
-# Versioning is based ONLY on the commit message.
+# Versioning is based ONLY on the commit message that reached main.
 #
 # Examples:
 #
@@ -27,7 +28,7 @@ name: release-version
 #   chore(workflow): update documentation
 #       -> No release
 #
-# The PR title and PR description are NOT used.
+# PR title, PR description and PR metadata are NOT used.
 # -----------------------------------------------------------------------------
 
 on:
@@ -35,36 +36,24 @@ on:
 
     inputs:
 
-      # -----------------------------------------------------------------------
-      # Default tag prefix
-      # -----------------------------------------------------------------------
       tag_prefix:
         description: "Default release tag prefix when commit has no scope"
         required: false
         type: string
         default: "v"
 
-      # -----------------------------------------------------------------------
-      # Initial version
-      # -----------------------------------------------------------------------
       initial_version:
-        description: "Initial version when no previous tag exists"
+        description: "Initial version when no previous release tag exists"
         required: false
         type: string
         default: "0.1.0"
 
-      # -----------------------------------------------------------------------
-      # Manual bump override
-      # -----------------------------------------------------------------------
       bump_override:
-        description: "Version bump: auto | major | minor | patch"
+        description: "Force version bump: auto | major | minor | patch"
         required: false
         type: string
         default: "auto"
 
-    # -------------------------------------------------------------------------
-    # Outputs
-    # -------------------------------------------------------------------------
     outputs:
 
       current_version:
@@ -100,18 +89,12 @@ on:
         value: ${{ jobs.compute-version.outputs.commit_message }}
 
 
-# -----------------------------------------------------------------------------
-# Permissions
-# -----------------------------------------------------------------------------
 permissions:
   contents: read
 
 
 jobs:
 
-  # ============================================================================
-  # Calculate version
-  # ============================================================================
   compute-version:
     name: Calculate Version
     runs-on: ubuntu-latest
@@ -129,7 +112,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------------
-      # Checkout the exact commit that triggered the workflow
+      # Checkout exact commit that triggered the push
       # -----------------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -161,7 +144,8 @@ jobs:
           COMMIT_MESSAGE="$(echo "$COMMIT_MESSAGE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
           echo "::group::Commit Information"
-          echo "Commit message: ${COMMIT_MESSAGE}"
+          echo "Commit SHA     : ${GITHUB_SHA}"
+          echo "Commit message : ${COMMIT_MESSAGE}"
           echo "::endgroup::"
 
 
@@ -202,14 +186,13 @@ jobs:
             } >> "$GITHUB_OUTPUT"
 
             exit 0
-
           fi
 
 
           echo "::group::Conventional Commit"
           echo "Type     : ${COMMIT_TYPE}"
           echo "Scope    : ${COMMIT_SCOPE:-none}"
-          echo "Breaking : ${BREAKING}"
+          echo "Breaking  : ${BREAKING}"
           echo "::endgroup::"
 
 
@@ -218,21 +201,17 @@ jobs:
           # =====================================================================
 
           if [[ -n "$COMMIT_SCOPE" ]]; then
-
             RELEASE_SCOPE="$COMMIT_SCOPE"
             RELEASE_TAG_PREFIX="${COMMIT_SCOPE}-${DEFAULT_TAG_PREFIX}"
-
           else
-
             RELEASE_SCOPE=""
             RELEASE_TAG_PREFIX="$DEFAULT_TAG_PREFIX"
-
           fi
 
 
           echo "::group::Release Stream"
-          echo "Scope      : ${RELEASE_SCOPE:-default}"
-          echo "Tag prefix : ${RELEASE_TAG_PREFIX}"
+          echo "Release scope : ${RELEASE_SCOPE:-default}"
+          echo "Tag prefix    : ${RELEASE_TAG_PREFIX}"
           echo "::endgroup::"
 
 
@@ -252,16 +231,12 @@ jobs:
           # =====================================================================
 
           if [[ -z "$LAST_TAG" ]]; then
-
             CURRENT_VERSION="$INITIAL_VERSION"
 
             echo "::notice::No previous tag found for '${RELEASE_TAG_PREFIX}'."
             echo "::notice::Starting from ${INITIAL_VERSION}."
-
           else
-
             CURRENT_VERSION="${LAST_TAG#"$RELEASE_TAG_PREFIX"}"
-
           fi
 
 
@@ -283,7 +258,6 @@ jobs:
               major|minor|patch)
                 BUMP="$BUMP_OVERRIDE"
                 ;;
-
               *)
                 echo "::error::Invalid bump_override: ${BUMP_OVERRIDE}"
                 exit 1
@@ -291,24 +265,19 @@ jobs:
             esac
 
           elif [[ "$BREAKING" == "true" ]]; then
-
             BUMP="major"
 
           elif [[ "$COMMIT_TYPE" == "feat" ]]; then
-
             BUMP="minor"
 
           elif [[ "$COMMIT_TYPE" == "fix" ]]; then
-
             BUMP="patch"
 
           else
-
             echo "::notice::Commit type '${COMMIT_TYPE}' does not trigger a release."
 
             HAS_CHANGES="false"
             BUMP="none"
-
           fi
 
 
@@ -332,7 +301,6 @@ jobs:
             } >> "$GITHUB_OUTPUT"
 
             exit 0
-
           fi
 
 
@@ -349,7 +317,6 @@ jobs:
 
             echo "::error::Invalid semantic version: ${CURRENT_VERSION}"
             exit 1
-
           fi
 
 
