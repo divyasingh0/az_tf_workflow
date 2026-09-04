@@ -1,35 +1,113 @@
 name: release-trigger
 
-# Entry point. This is the ONLY workflow you attach to a trigger event;
-# it just calls the reusable release.yml with your org's configuration.
+# ============================================================
+# RELEASE TRIGGER
+#
+# This is the only workflow attached to the release trigger.
+#
+# Normal release:
+#
+#   PR merged
+#       ↓
+#   push to main
+#       ↓
+#   release.yml
+#       ↓
+#   determine component
+#       ↓
+#   calculate version
+#       ↓
+#   generate release notes
+#       ↓
+#   create tag + GitHub Release
+#
+# Multi-tag example:
+#
+#   feat(storage): add private endpoint
+#       ↓
+#   storage-v2.1.0
+#
+#   fix(network): correct subnet
+#       ↓
+#   network-v2.0.1
+#
+# ============================================================
 
 on:
+
+  # ----------------------------------------------------------
+  # Normal release trigger.
+  #
+  # A merged PR creates a push to main.
+  # ----------------------------------------------------------
+
   push:
-    branches: 
-    - main
+    branches:
+      - main
+
+
+  # ----------------------------------------------------------
+  # Manual release / testing.
+  # ----------------------------------------------------------
 
   workflow_dispatch:
+
     inputs:
+
       bump_override:
         description: "Force a version bump"
         type: choice
-        options: [auto, patch, minor, major]
+        options:
+          - auto
+          - patch
+          - minor
+          - major
         default: auto
+
       dry_run:
         description: "Preview only, do not tag or publish"
         type: boolean
         default: false
+
+
+# ============================================================
+# PERMISSIONS
+# ============================================================
+
 permissions:
   contents: write
-  id-token: write
   pull-requests: read
 
+
+# ============================================================
+# CALL CENTRALIZED REUSABLE WORKFLOW
+# ============================================================
+
 jobs:
+
   release:
+
     uses: ./.github/workflows/release.yml
+
     with:
-      # tag_prefix: ${{ vars.RELEASE_TAG_PREFIX }}
+
+      # ------------------------------------------------------
+      # Do NOT pass tag_prefix here.
+      #
+      # release.yml determines it dynamically:
+      #
+      # feat(storage)
+      #       ↓
+      # storage
+      #       ↓
+      # storage-v2
+      #
+      # ------------------------------------------------------
+
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
+
       bump_override: ${{ inputs.bump_override || 'auto' }}
+
       dry_run: ${{ inputs.dry_run || false }}
+
     secrets: inherit
