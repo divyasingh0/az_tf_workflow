@@ -173,7 +173,7 @@ jobs:
 
     needs: determine
 
-    uses: ./.github/workflows/release-version.yml
+    uses: ./.github/workflows/version.yml
 
     with:
       release_stream: ${{ needs.determine.outputs.release_stream }}
