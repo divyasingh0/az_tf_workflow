@@ -4,10 +4,10 @@ name: release-trigger
 # it just calls the reusable release.yml with your org's configuration.
 
 on:
-  # push:
-  #   branches: [main]
-  pull_request:
-    branches: [main]
+  push:
+    branches: 
+    - main
+
   workflow_dispatch:
     inputs:
       bump_override:
@@ -28,7 +28,7 @@ jobs:
   release:
     uses: ./.github/workflows/release.yml
     with:
-      tag_prefix: ${{ vars.RELEASE_TAG_PREFIX || 'workflow-v' }}
+      # tag_prefix: ${{ vars.RELEASE_TAG_PREFIX }}
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}

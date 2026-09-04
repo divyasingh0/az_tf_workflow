@@ -1,162 +1,459 @@
 name: release-version
 
-# Reusable workflow: computes the next SemVer version from Conventional Commits.
-# Supports monorepo "scoped" components (e.g. compute, network, storage) via
-# the `scope` input, matched against Conventional Commit scopes like fix(compute): ...
+# ============================================================
+# Reusable workflow for calculating the next semantic version.
+#
+# Release streams are independent.
+#
+# Examples:
+#
+#   storage-v2.0.0
+#   network-v2.0.0
+#   workflow-v2.0.0
+#
+# Older V1 tags are intentionally ignored:
+#
+#   storage-v1.9.0
+#   network-v1.8.0
+#
+# The release workflow passes:
+#
+#   release_stream: storage-v2
+#
+# This workflow then looks ONLY at:
+#
+#   storage-v2.*
+# ============================================================
 
 on:
   workflow_call:
+
     inputs:
-      tag_prefix:
-        description: "Prefix used for git tags, e.g. 'v' -> v1.2.3"
-        required: false
+
+      # --------------------------------------------------------
+      # Complete release stream.
+      #
+      # Example:
+      #
+      # storage-v2
+      # network-v2
+      # workflow-v2
+      #
+      # This is deliberately NOT just "storage-v".
+      # --------------------------------------------------------
+
+      release_stream:
+        description: "Release stream, e.g. storage-v2 or network-v2"
+        required: true
         type: string
-        default: "v"
+
+      # --------------------------------------------------------
+      # Conventional Commit scope.
+      #
+      # Example:
+      #
+      # feat(storage): add private endpoint
+      #
+      # scope = storage
+      # --------------------------------------------------------
+
       scope:
-        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
-        required: false
+        description: "Conventional Commit scope, e.g. storage"
+        required: true
         type: string
-        default: ""
+
+      # --------------------------------------------------------
+      # Bootstrap version.
+      #
+      # Normally the stream already has v2.0.0, so this is
+      # only used if the stream has no existing tag.
+      # --------------------------------------------------------
+
       initial_version:
-        description: "Baseline version used when no prior tag exists"
+        description: "Baseline version when no release tag exists"
         required: false
         type: string
-        default: "0.1.0"
+        default: "2.0.0"
+
+      # --------------------------------------------------------
+      # Optional manual version override.
+      # --------------------------------------------------------
+
       bump_override:
-        description: "Force a bump instead of auto-detecting: auto|major|minor|patch"
+        description: "auto|major|minor|patch"
         required: false
         type: string
         default: "auto"
+
+
     outputs:
+
       current_version:
-        description: "Latest released version (no prefix). Equals initial_version if no tags exist."
+        description: "Latest version for this release stream"
         value: ${{ jobs.compute.outputs.current_version }}
+
       next_version:
-        description: "Computed next version (no prefix)"
+        description: "Next calculated version"
         value: ${{ jobs.compute.outputs.next_version }}
+
       next_tag:
-        description: "Computed next version WITH prefix, e.g. v1.3.0"
+        description: "Next release tag"
         value: ${{ jobs.compute.outputs.next_tag }}
+
       bump_type:
-        description: "major | minor | patch | none"
+        description: "major|minor|patch|none"
         value: ${{ jobs.compute.outputs.bump_type }}
+
       has_changes:
-        description: "true if there are releasable commits since the last tag"
+        description: "Whether a release is required"
         value: ${{ jobs.compute.outputs.has_changes }}
+
 
 permissions:
   contents: read
 
+
 jobs:
+
   compute:
-    name: Version
+
+    name: Calculate Version
+
     runs-on: ubuntu-latest
+
     outputs:
+
       current_version: ${{ steps.semver.outputs.current_version }}
+
       next_version: ${{ steps.semver.outputs.next_version }}
+
       next_tag: ${{ steps.semver.outputs.next_tag }}
+
       bump_type: ${{ steps.semver.outputs.bump_type }}
+
       has_changes: ${{ steps.semver.outputs.has_changes }}
+
+
     steps:
-      # see the full history and every existing tag.
+
+      # ========================================================
+      # Checkout complete repository history and all tags.
+      # ========================================================
+
       - name: Checkout full history
+
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
         with:
           fetch-depth: 0
 
+
+      # ========================================================
+      # Calculate next version.
+      # ========================================================
+
       - name: Compute next semantic version
+
         id: semver
+
         shell: bash
+
         env:
-          TAG_PREFIX: ${{ inputs.tag_prefix }}
+
+          RELEASE_STREAM: ${{ inputs.release_stream }}
+
           SCOPE: ${{ inputs.scope }}
+
           INITIAL_VERSION: ${{ inputs.initial_version }}
+
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
+
         run: |
+
           set -euo pipefail
 
-          # Find latest release tag FOR THIS COMPONENT (tag_prefix scopes this)
-          LAST_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | head -n1 || true)
+
+          echo "=========================================="
+
+          echo "Release Version Calculation"
+
+          echo "=========================================="
+
+          echo "Release stream : $RELEASE_STREAM"
+
+          echo "Scope          : $SCOPE"
+
+
+          # ====================================================
+          # FIND LATEST TAG FOR THIS RELEASE STREAM ONLY
+          #
+          # Example:
+          #
+          # RELEASE_STREAM=storage-v2
+          #
+          # Matching:
+          #
+          # storage-v2.0.0
+          # storage-v2.1.0
+          #
+          # NOT matching:
+          #
+          # storage-v1.9.0
+          # network-v2.0.0
+          # ====================================================
+
+          LAST_TAG=$(
+            git tag --list "${RELEASE_STREAM}.*" \
+              --sort=-v:refname |
+            head -n1 || true
+          )
+
 
           if [[ -z "$LAST_TAG" ]]; then
+
             CURRENT_VERSION="$INITIAL_VERSION"
-            echo "No existing tags found for prefix '$TAG_PREFIX'. Baseline version: $CURRENT_VERSION"
+
+            echo "No existing tag found for stream:"
+            echo "$RELEASE_STREAM"
+
+            echo "Using initial version:"
+            echo "$CURRENT_VERSION"
+
           else
-            CURRENT_VERSION="${LAST_TAG#"$TAG_PREFIX"}"
-            echo "Latest tag: $LAST_TAG"
+
+            # --------------------------------------------------
+            # Remove the release stream prefix.
+            #
+            # storage-v2.0.0
+            #       ↓
+            # 2.0.0
+            # --------------------------------------------------
+
+            CURRENT_VERSION="${LAST_TAG#"$RELEASE_STREAM."}"
+
+            echo "Latest release tag:"
+            echo "$LAST_TAG"
+
+            echo "Current version:"
+            echo "$CURRENT_VERSION"
+
           fi
 
-          # Look at ALL commits since this component's last tag (not just the last commit).
+
+          # ====================================================
+          # DETERMINE COMMIT RANGE
+          #
+          # Only commits after the latest release of THIS
+          # release stream are considered.
+          # ====================================================
+
           RANGE="HEAD"
-          [[ -n "$LAST_TAG" ]] && RANGE="${LAST_TAG}..HEAD"
-          COMMITS=$(git log "$RANGE" --pretty=format:"%s%n%b%n---")
 
-          # Build the scope pattern:
-          # - if SCOPE is set (e.g. "compute"), only match that exact scope: fix(compute):
-          # - if SCOPE is empty, match any scope OR no scope at all (repo-wide mode)
-          if [[ -n "$SCOPE" ]]; then
-            SCOPE_RE="\\(${SCOPE}\\)"
-          else
-            SCOPE_RE="(\\([^)]*\\))?"
+          if [[ -n "$LAST_TAG" ]]; then
+
+            RANGE="${LAST_TAG}..HEAD"
+
           fi
+
+
+          echo "Commit range:"
+          echo "$RANGE"
+
+
+          # ====================================================
+          # READ COMMIT SUBJECTS + BODIES
+          # ====================================================
+
+          COMMITS=$(
+            git log "$RANGE" \
+              --pretty=format:"%s%n%b%n---" \
+              --no-merges
+          )
+
+
+          # ====================================================
+          # MATCH ONLY THIS COMPONENT'S CONVENTIONAL COMMITS
+          #
+          # Examples:
+          #
+          # feat(storage):
+          # fix(storage):
+          # feat(storage)!:
+          #
+          # Other components are ignored.
+          # ====================================================
+
+          SCOPE_RE="\\(${SCOPE}\\)"
+
 
           HAS_CHANGES="false"
+
           BUMP="none"
 
+
+          # ====================================================
+          # MANUAL OVERRIDE
+          # ====================================================
+
           if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
+
             BUMP="$BUMP_OVERRIDE"
+
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qiE "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
+
+          # ====================================================
+          # BREAKING CHANGE
+          # ====================================================
+
+          elif echo "$COMMITS" |
+            grep -qiE \
+            "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
+
             BUMP="major"
+
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qE "^feat${SCOPE_RE}:"; then
+
+          # ====================================================
+          # FEATURE
+          # ====================================================
+
+          elif echo "$COMMITS" |
+            grep -qE \
+            "^feat${SCOPE_RE}:"; then
+
             BUMP="minor"
+
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qE "^fix${SCOPE_RE}:"; then
+
+          # ====================================================
+          # BUG FIX
+          # ====================================================
+
+          elif echo "$COMMITS" |
+            grep -qE \
+            "^fix${SCOPE_RE}:"; then
+
             BUMP="patch"
+
             HAS_CHANGES="true"
+
           fi
 
-          # No releasable commit found for this scope
+
+          # ====================================================
+          # NO RELEASE REQUIRED
+          # ====================================================
+
           if [[ "$HAS_CHANGES" == "false" ]]; then
-            echo "No releasable commits found for scope '${SCOPE:-<repo-wide>}'."
+
+            echo ""
+            echo "No releasable commits found."
+            echo "Scope: $SCOPE"
+            echo "Stream: $RELEASE_STREAM"
 
             {
               echo "has_changes=false"
               echo "current_version=$CURRENT_VERSION"
               echo "next_version=$CURRENT_VERSION"
-              echo "next_tag=${TAG_PREFIX}${CURRENT_VERSION}"
+              echo "next_tag=${RELEASE_STREAM}.${CURRENT_VERSION}"
               echo "bump_type=none"
             } >> "$GITHUB_OUTPUT"
 
             exit 0
+
           fi
+
+
+          # ====================================================
+          # CALCULATE NEXT SEMVER
+          # ====================================================
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
 
+
           case "$BUMP" in
+
             major)
-              MAJOR=$((MAJOR+1))
+
+              MAJOR=$((MAJOR + 1))
+
               MINOR=0
+
               PATCH=0
+
               ;;
+
+
             minor)
-              MINOR=$((MINOR+1))
+
+              MINOR=$((MINOR + 1))
+
               PATCH=0
+
               ;;
+
+
             patch)
-              PATCH=$((PATCH+1))
+
+              PATCH=$((PATCH + 1))
+
               ;;
+
+
+            *)
+
+              echo "::error::Invalid bump type: $BUMP"
+
+              exit 1
+
+              ;;
+
           esac
 
-          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          NEXT_TAG="${TAG_PREFIX}${NEXT_VERSION}"
 
-          echo "Release detected for scope '${SCOPE:-<repo-wide>}': $BUMP"
-          echo "Next version: $NEXT_VERSION"
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+
+          # ====================================================
+          # BUILD FINAL TAG
+          #
+          # storage-v2 + 1.1.0
+          #       ↓
+          # storage-v2.1.0
+          # ====================================================
+
+          NEXT_TAG="${RELEASE_STREAM}.${NEXT_VERSION}"
+
+
+          echo ""
+
+          echo "=========================================="
+
+          echo "Release detected"
+
+          echo "=========================================="
+
+          echo "Scope          : $SCOPE"
+
+          echo "Release stream : $RELEASE_STREAM"
+
+          echo "Current        : $CURRENT_VERSION"
+
+          echo "Bump           : $BUMP"
+
+          echo "Next version   : $NEXT_VERSION"
+
+          echo "Next tag       : $NEXT_TAG"
+
+          echo "=========================================="
+
+
+          # ====================================================
+          # EXPORT OUTPUTS
+          # ====================================================
 
           {
             echo "has_changes=true"
