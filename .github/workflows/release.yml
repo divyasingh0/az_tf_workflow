@@ -1,33 +1,76 @@
 name: Release
 
+# ============================================================
+# CENTRALIZED REUSABLE RELEASE WORKFLOW
+#
+# Flow:
+#
+#   release-trigger.yml
+#          ↓
+#       release.yml
+#          ↓
+#   release-version.yml
+#
+# Release stream is determined from the merged PR title.
+#
+# Example:
+#
+#   feat(storage): add private endpoint
+#
+#        ↓
+#
+#   storage-v2
+#
+#        ↓
+#
+#   storage-v2.1.0
+#
+# Release notes are generated from the PR's:
+#
+#   ## Summary
+#
+# ============================================================
+
 on:
   workflow_call:
+
     inputs:
 
       initial_version:
+        description: "Initial version for a new release stream"
         required: false
         type: string
         default: "2.0.0"
 
       bump_override:
+        description: "auto|patch|minor|major"
         required: false
         type: string
         default: "auto"
 
       dry_run:
+        description: "Calculate release without creating tag/release"
         required: false
         type: boolean
         default: false
 
       draft:
+        description: "Create GitHub Release as draft"
         required: false
         type: boolean
         default: false
 
       prerelease:
+        description: "Create GitHub Release as prerelease"
         required: false
         type: boolean
         default: false
+
+      target_commitish:
+        description: "Optional branch or SHA for GitHub Release"
+        required: false
+        type: string
+        default: ""
 
     outputs:
 
@@ -49,6 +92,7 @@ permissions:
   pull-requests: read
 
 
+# Prevent two releases for the same repository/ref from racing.
 concurrency:
   group: release-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
@@ -58,147 +102,225 @@ jobs:
 
   # ==========================================================
   # JOB 1
-  # Determine component from the commit message.
   #
-  # feat(storage): add private endpoint
-  #              ↓
-  #           storage
-  #              ↓
-  #           storage-v2
+  # Find the merged PR associated with the current push.
+  #
+  # IMPORTANT:
+  #
+  # We do NOT use:
+  #
+  #   git log -1
+  #
+  # because the latest commit after a PR merge can be:
+  #
+  #   Merge pull request #35 ...
+  #
+  # Instead, GitHub PR metadata is used.
   # ==========================================================
 
-  determine:
+  determine-stream:
 
     name: Determine Release Stream
 
     runs-on: ubuntu-latest
 
     outputs:
+
       component: ${{ steps.stream.outputs.component }}
+
       release_stream: ${{ steps.stream.outputs.release_stream }}
+
+      pr_number: ${{ steps.stream.outputs.pr_number }}
 
     steps:
 
-      - name: Checkout
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          fetch-depth: 0
+      - name: Find merged PR
 
+        id: find-pr
 
-      - name: Determine stream
-        id: stream
+        env:
+          GH_TOKEN: ${{ github.token }}
+
         shell: bash
 
         run: |
 
           set -euo pipefail
 
-          COMMIT=$(git log -1 --pretty=format:"%s")
+          echo "Finding merged PR for commit: $GITHUB_SHA"
 
-          echo "Commit: $COMMIT"
+          PR_NUMBER=""
 
+          # ----------------------------------------------------
+          # Find the PR associated with the commit that triggered
+          # this workflow.
+          # ----------------------------------------------------
 
-          # --------------------------------------------------
-          # Extract Conventional Commit scope.
-          #
-          # Example:
-          #
-          # feat(storage): add endpoint
-          #
-          # Result:
-          #
-          # storage
-          # --------------------------------------------------
+          PR_NUMBER=$(
+            gh api \
+              --paginate \
+              "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '.[] | select(.merged_at != null) | .number' |
+            head -n1 || true
+          )
 
-          if [[ "$COMMIT" =~ ^[a-zA-Z]+\\(([^)]+)\\)(!)?: ]]; then
+          # ----------------------------------------------------
+          # Fallback for squash/merge situations:
+          # search recently merged PRs and match merge commit.
+          # ----------------------------------------------------
 
-            COMPONENT="${BASH_REMATCH[1]}"
+          if [[ -z "$PR_NUMBER" ]]; then
 
-          else
+            PR_NUMBER=$(
+              gh pr list \
+                --repo "$GITHUB_REPOSITORY" \
+                --state merged \
+                --base main \
+                --limit 50 \
+                --json number,mergeCommit |
+              jq -r \
+                --arg SHA "$GITHUB_SHA" \
+                '.[] | select(.mergeCommit.oid == $SHA) | .number' |
+              head -n1 || true
+            )
 
-            echo "::error::Commit must contain a component scope."
+          fi
 
-            echo "Example:"
-            echo "feat(storage): add private endpoint"
+          if [[ -z "$PR_NUMBER" ]]; then
+
+            echo "::error::Unable to determine merged PR for commit $GITHUB_SHA"
 
             exit 1
 
           fi
 
+          echo "Merged PR: #$PR_NUMBER"
 
-          # --------------------------------------------------
-          # Every component has its own V2 release stream.
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+
+      # ========================================================
+      # Determine component from PR title.
+      #
+      # Example:
+      #
+      # feat(storage): add private endpoint
+      #
+      # component = storage
+      #
+      # release_stream = storage-v2
+      # ========================================================
+
+      - name: Determine release stream
+
+        id: stream
+
+        env:
+
+          GH_TOKEN: ${{ github.token }}
+
+          PR_NUMBER: ${{ steps.find-pr.outputs.pr_number }}
+
+        shell: bash
+
+        run: |
+
+          set -euo pipefail
+
+          PR_TITLE=$(
+            gh pr view "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json title \
+              --jq '.title'
+          )
+
+          echo "PR: #$PR_NUMBER"
+          echo "PR title: $PR_TITLE"
+
+          # ----------------------------------------------------
+          # Extract Conventional Commit scope.
           #
-          # storage-v2
-          # network-v2
-          # workflow-v2
-          # --------------------------------------------------
+          # Supported:
+          #
+          # feat(storage): ...
+          # fix(storage): ...
+          # feat(storage)!: ...
+          # ----------------------------------------------------
+
+          if [[ "$PR_TITLE" =~ ^[a-zA-Z]+\(([^)]+)\)!?: ]]; then
+
+            COMPONENT="${BASH_REMATCH[1]}"
+
+          else
+
+            echo "::error::PR title does not contain a valid Conventional Commit scope."
+
+            echo ""
+            echo "Expected examples:"
+            echo "  feat(storage): add private endpoint"
+            echo "  fix(network): correct subnet"
+            echo "  feat(workflow)!: change release process"
+
+            exit 1
+
+          fi
 
           RELEASE_STREAM="${COMPONENT}-v2"
 
           echo "Component: $COMPONENT"
           echo "Release stream: $RELEASE_STREAM"
 
-
-          # --------------------------------------------------
-          # Verify that the V2 stream already exists.
-          #
-          # This prevents accidentally creating a new stream.
-          # --------------------------------------------------
-
-          if ! git tag --list "${RELEASE_STREAM}.*" | grep -q .; then
-
-            echo "::error::No V2 release tag found for ${RELEASE_STREAM}."
-
-            echo "Expected baseline:"
-            echo "${RELEASE_STREAM}.0.0"
-
-            exit 1
-
-          fi
-
-
-          echo "component=$COMPONENT" >> "$GITHUB_OUTPUT"
-          echo "release_stream=$RELEASE_STREAM" >> "$GITHUB_OUTPUT"
+          {
+            echo "component=$COMPONENT"
+            echo "release_stream=$RELEASE_STREAM"
+            echo "pr_number=$PR_NUMBER"
+          } >> "$GITHUB_OUTPUT"
 
 
   # ==========================================================
   # JOB 2
-  # Calculate the next version for ONLY the selected stream.
+  #
+  # Calculate version for ONLY the selected release stream.
+  #
+  # Example:
+  #
+  # storage-v2.0.0
+  #       ↓
+  # storage-v2.1.0
   # ==========================================================
 
   version:
 
     name: Calculate Version
 
-    needs: determine
+    needs: determine-stream
 
-    uses: ./.github/workflows/version.yml
+    uses: ./.github/workflows/release-version.yml
 
     with:
-      release_stream: ${{ needs.determine.outputs.release_stream }}
-      scope: ${{ needs.determine.outputs.component }}
+
+      release_stream: ${{ needs.determine-stream.outputs.release_stream }}
+
+      scope: ${{ needs.determine-stream.outputs.component }}
+
       initial_version: ${{ inputs.initial_version }}
+
       bump_override: ${{ inputs.bump_override }}
 
 
   # ==========================================================
   # JOB 3
   #
-  # Generate custom PR-based release notes.
+  # Generate release notes from merged PRs.
   #
-  # Only:
+  # Only PRs belonging to the selected component and after the
+  # latest V2 release are included.
   #
-  # 1. PRs for the selected component
-  # 2. PRs merged after the component's previous V2 tag
+  # PR:
   #
-  # are included.
+  #   ## Summary
   #
-  # Release notes use ONLY the PR's:
-  #
-  # ## Summary
-  #
-  # section.
+  # becomes the release-note content.
   # ==========================================================
 
   release:
@@ -206,7 +328,7 @@ jobs:
     name: Create Release
 
     needs:
-      - determine
+      - determine-stream
       - version
 
     if: needs.version.outputs.has_changes == 'true'
@@ -219,11 +341,12 @@ jobs:
 
       released_tag: ${{ steps.tag.outputs.tag }}
 
-
     steps:
 
-      - name: Checkout
+      - name: Checkout repository
+
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
         with:
           fetch-depth: 0
 
@@ -236,36 +359,34 @@ jobs:
 
         id: changelog
 
-        shell: bash
-
         env:
+
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          COMPONENT: ${{ needs.determine.outputs.component }}
-          RELEASE_STREAM: ${{ needs.determine.outputs.release_stream }}
+
+          COMPONENT: ${{ needs.determine-stream.outputs.component }}
+
+          RELEASE_STREAM: ${{ needs.determine-stream.outputs.release_stream }}
+
+        shell: bash
 
         run: |
 
           set -euo pipefail
 
+          echo "Generating release notes..."
 
-          echo "=========================================="
-          echo "Generating Release Notes"
-          echo "=========================================="
-
-          echo "Component      : $COMPONENT"
-          echo "Release stream : $RELEASE_STREAM"
+          echo "Component: $COMPONENT"
+          echo "Release stream: $RELEASE_STREAM"
 
 
           # ----------------------------------------------------
-          # Find the latest tag ONLY for this V2 stream.
+          # Find latest tag for THIS release stream only.
           #
           # Example:
           #
-          # storage-v2.0.0
           # storage-v2.1.0
           #
-          # storage-v1.x.x is ignored.
+          # V1 tags are ignored.
           # ----------------------------------------------------
 
           LAST_TAG=$(
@@ -274,65 +395,65 @@ jobs:
             head -n1 || true
           )
 
-
           echo "Previous release: ${LAST_TAG:-none}"
 
 
           # ----------------------------------------------------
-          # Get merged PRs from main.
+          # Determine commit range.
           # ----------------------------------------------------
 
-          PR_DATA=$(
-            gh pr list \
-              --repo "$REPOSITORY" \
-              --state merged \
-              --base main \
-              --limit 100 \
-              --json number,title,body,mergeCommit,url
+          RANGE="HEAD"
+
+          if [[ -n "$LAST_TAG" ]]; then
+            RANGE="${LAST_TAG}..HEAD"
+          fi
+
+
+          # ----------------------------------------------------
+          # Get commits in the selected release stream.
+          # ----------------------------------------------------
+
+          MERGE_SHAS=$(
+            git log "$RANGE" \
+              --merges \
+              --format="%H"
           )
 
 
-          BREAKING_FILE=$(mktemp)
           FEATURES_FILE=$(mktemp)
           FIXES_FILE=$(mktemp)
+          BREAKING_FILE=$(mktemp)
 
-
-          touch "$BREAKING_FILE"
           touch "$FEATURES_FILE"
           touch "$FIXES_FILE"
+          touch "$BREAKING_FILE"
 
 
           # ====================================================
-          # PROCESS EACH PR
+          # PROCESS MERGED PRS
           # ====================================================
 
-          while read -r PR; do
+          for SHA in $MERGE_SHAS; do
 
-            PR_NUMBER=$(echo "$PR" | jq -r '.number')
-            PR_TITLE=$(echo "$PR" | jq -r '.title')
-            PR_BODY=$(echo "$PR" | jq -r '.body // ""')
-            PR_URL=$(echo "$PR" | jq -r '.url')
-            MERGE_SHA=$(echo "$PR" | jq -r '.mergeCommit.oid // ""')
+            PR_NUMBER=$(
+              gh api \
+                "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" \
+                --jq '.[0].number // empty' 2>/dev/null || true
+            )
+
+            [[ -z "$PR_NUMBER" ]] && continue
+
+
+            PR_TITLE=$(
+              gh pr view "$PR_NUMBER" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json title \
+                --jq '.title'
+            )
 
 
             # --------------------------------------------------
-            # Ignore PRs without merge commit.
-            # --------------------------------------------------
-
-            if [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]]; then
-              continue
-            fi
-
-
-            # --------------------------------------------------
-            # Include ONLY PRs for this component.
-            #
-            # storage:
-            #
-            # feat(storage): ...
-            # fix(storage): ...
-            #
-            # network PRs are ignored.
+            # Only include PRs for the selected component.
             # --------------------------------------------------
 
             if ! echo "$PR_TITLE" |
@@ -344,27 +465,20 @@ jobs:
 
 
             # --------------------------------------------------
-            # Include ONLY PRs after the previous release tag.
-            #
-            # This is what prevents old release history from
-            # appearing in the new release notes.
+            # Extract PR body.
             # --------------------------------------------------
 
-            if [[ -n "$LAST_TAG" ]]; then
-
-              if ! git merge-base \
-                --is-ancestor "$LAST_TAG" "$MERGE_SHA" \
-                2>/dev/null
-              then
-                continue
-              fi
-
-            fi
+            PR_BODY=$(
+              gh pr view "$PR_NUMBER" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json body \
+                --jq '.body // ""'
+            )
 
 
-            # ==================================================
-            # EXTRACT ## Summary FROM PR DESCRIPTION
-            # ==================================================
+            # --------------------------------------------------
+            # Extract ## Summary only.
+            # --------------------------------------------------
 
             SUMMARY=$(
               echo "$PR_BODY" |
@@ -375,7 +489,7 @@ jobs:
                 }
 
                 /^## / {
-                  if (found) exit
+                  found=0
                 }
 
                 found {
@@ -385,7 +499,6 @@ jobs:
             )
 
 
-            # Remove empty lines at beginning/end.
             SUMMARY=$(
               echo "$SUMMARY" |
               sed '/^[[:space:]]*$/d'
@@ -393,57 +506,46 @@ jobs:
 
 
             # --------------------------------------------------
-            # If Summary is missing, use a controlled fallback.
+            # Build release-note entry.
             # --------------------------------------------------
-
-            if [[ -z "$SUMMARY" ]]; then
-              SUMMARY="No summary provided in the PR description."
-            fi
-
-
-            # ==================================================
-            # BUILD RELEASE NOTE ENTRY
-            # ==================================================
 
             ENTRY="### ${PR_TITLE} (#${PR_NUMBER})"$'\n\n'
 
-            ENTRY+="${SUMMARY}"$'\n\n'
+            if [[ -n "$SUMMARY" ]]; then
+              ENTRY+="${SUMMARY}"$'\n\n'
+            fi
 
-            ENTRY+="[View PR #${PR_NUMBER}](${PR_URL})"$'\n'
+            ENTRY+="[View PR #${PR_NUMBER}](https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER})"
 
 
-            # ==================================================
-            # CATEGORIZE PR
-            # ==================================================
+            # --------------------------------------------------
+            # Categorize PR.
+            # --------------------------------------------------
 
             if echo "$PR_TITLE" |
               grep -qE \
-              "^[a-zA-Z]+\\([^)]*\\)!:"
+              "^[a-zA-Z]+\\(${COMPONENT}\\)!:"
             then
 
               printf '%s\n\n' "$ENTRY" >> "$BREAKING_FILE"
 
-
             elif echo "$PR_TITLE" |
               grep -qE \
-              "^feat\\([^)]*\\):"
+              "^feat\\(${COMPONENT}\\):"
             then
 
               printf '%s\n\n' "$ENTRY" >> "$FEATURES_FILE"
 
-
             elif echo "$PR_TITLE" |
               grep -qE \
-              "^fix\\([^)]*\\):"
+              "^fix\\(${COMPONENT}\\):"
             then
 
               printf '%s\n\n' "$ENTRY" >> "$FIXES_FILE"
 
             fi
 
-          done < <(
-            echo "$PR_DATA" | jq -c '.[]'
-          )
+          done
 
 
           # ====================================================
@@ -452,14 +554,10 @@ jobs:
 
           NOTES_FILE=$(mktemp)
 
-
           echo "# ${COMPONENT} V2 Release" >> "$NOTES_FILE"
+
           echo "" >> "$NOTES_FILE"
 
-
-          # ----------------------------------------------------
-          # Breaking Changes
-          # ----------------------------------------------------
 
           if [[ -s "$BREAKING_FILE" ]]; then
 
@@ -471,10 +569,6 @@ jobs:
           fi
 
 
-          # ----------------------------------------------------
-          # Features
-          # ----------------------------------------------------
-
           if [[ -s "$FEATURES_FILE" ]]; then
 
             echo "## 🚀 Features" >> "$NOTES_FILE"
@@ -484,10 +578,6 @@ jobs:
 
           fi
 
-
-          # ----------------------------------------------------
-          # Bug Fixes
-          # ----------------------------------------------------
 
           if [[ -s "$FIXES_FILE" ]]; then
 
@@ -500,7 +590,7 @@ jobs:
 
 
           # ----------------------------------------------------
-          # Export release notes to GitHub Actions output.
+          # Export release notes.
           # ----------------------------------------------------
 
           {
@@ -518,42 +608,41 @@ jobs:
 
         id: tag
 
-        shell: bash
-
         env:
+
           NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+
           NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+
           BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
+
           DRY_RUN: ${{ inputs.dry_run }}
+
+        shell: bash
 
         run: |
 
           set -euo pipefail
 
-
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
-
-
-          echo "Next tag: $NEXT_TAG"
-          echo "Next version: $NEXT_VERSION"
-          echo "Bump type: $BUMP_TYPE"
 
 
           if [[ "$DRY_RUN" == "true" ]]; then
 
-            echo "::notice::Dry run - no tag will be created."
+            echo "::notice::Dry run enabled."
+            echo "::notice::Would create tag: $NEXT_TAG"
+            echo "::notice::Bump type: $BUMP_TYPE"
 
             exit 0
 
           fi
 
 
-          git config user.name "github-actions[bot]"
-
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
+          # ----------------------------------------------------
+          # Create annotated tag.
+          # ----------------------------------------------------
 
           git tag -a "$NEXT_TAG" \
             -m "Release $NEXT_TAG"
@@ -564,12 +653,6 @@ jobs:
 
       # ========================================================
       # CREATE GITHUB RELEASE
-      #
-      # IMPORTANT:
-      #
-      # --generate-notes is NOT used.
-      #
-      # We provide our own standardized PR-based notes.
       # ========================================================
 
       - name: Create GitHub Release
@@ -577,11 +660,20 @@ jobs:
         if: inputs.dry_run == false
 
         env:
+
           GH_TOKEN: ${{ github.token }}
+
           TAG: ${{ steps.tag.outputs.tag }}
+
           NOTES: ${{ steps.changelog.outputs.changelog }}
+
           DRAFT: ${{ inputs.draft }}
+
           PRERELEASE: ${{ inputs.prerelease }}
+
+          TARGET: ${{ inputs.target_commitish }}
+
+        shell: bash
 
         run: |
 
@@ -604,11 +696,24 @@ jobs:
           fi
 
 
+          if [[ -n "$TARGET" ]]; then
+            ARGS+=(--target "$TARGET")
+          fi
+
+
+          # ----------------------------------------------------
+          # IMPORTANT:
+          #
+          # Do NOT use --generate-notes.
+          #
+          # Release notes are generated from PR ## Summary.
+          # ----------------------------------------------------
+
           gh release create "$TAG" "${ARGS[@]}"
 
 
       # ========================================================
-      # GITHUB ACTION SUMMARY
+      # WORKFLOW SUMMARY
       # ========================================================
 
       - name: Release summary
@@ -620,8 +725,8 @@ jobs:
           {
             echo "## Release Summary"
             echo ""
-            echo "- Component: \`${{ needs.determine.outputs.component }}\`"
-            echo "- Release stream: \`${{ needs.determine.outputs.release_stream }}\`"
+            echo "- Component: \`${{ needs.determine-stream.outputs.component }}\`"
+            echo "- Release stream: \`${{ needs.determine-stream.outputs.release_stream }}\`"
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
             echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
             echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
