@@ -1,60 +1,35 @@
-name: Release Trigger
+name: release-trigger
 
-# -----------------------------------------------------------------------------
-# Trigger release after a pull request is merged into main.
-#
-# The actual version calculation and release are handled by release.yml.
-# -----------------------------------------------------------------------------
+# Entry point. This is the ONLY workflow you attach to a trigger event;
+# it just calls the reusable release.yml with your org's configuration.
 
 on:
+  # push:
+  #   branches: [main]
   pull_request:
-    branches:
-      - main
-    types:
-      - closed
-
-
-# -----------------------------------------------------------------------------
-# Permissions
-# -----------------------------------------------------------------------------
-
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump_override:
+        description: "Force a version bump"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+      dry_run:
+        description: "Preview only, do not tag or publish"
+        type: boolean
+        default: false
 permissions:
   contents: write
+  id-token: write
   pull-requests: read
 
-
-# -----------------------------------------------------------------------------
-# Concurrency
-#
-# Only one release process can run at a time for main.
-# -----------------------------------------------------------------------------
-
-concurrency:
-  group: release-${{ github.repository }}-main
-  cancel-in-progress: false
-
-
 jobs:
-
-  # ============================================================================
-  # Release
-  # ============================================================================
-
   release:
-
-    name: Release
-
-    # Only run when the PR was actually merged.
-    if: github.event.pull_request.merged == true
-
     uses: ./.github/workflows/release.yml
-
     with:
-      tag_prefix: "v"
-      initial_version: "0.1.0"
-      bump_override: "auto"
-      dry_run: false
-      draft: false
-      prerelease: false
-
+      tag_prefix: ${{ vars.RELEASE_TAG_PREFIX || 'workflow-v' }}
+      initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
+      bump_override: ${{ inputs.bump_override || 'auto' }}
+      dry_run: ${{ inputs.dry_run || false }}
     secrets: inherit
