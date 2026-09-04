@@ -295,7 +295,7 @@ jobs:
 
     needs: determine-stream
 
-    uses: ./.github/workflows/release-version.yml
+    uses: ./.github/workflows/version.yml
 
     with:
 
