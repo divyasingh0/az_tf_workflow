@@ -1,35 +1,38 @@
 name: release-trigger
 
-# Entry point. This is the ONLY workflow you attach to a trigger event;
-# it just calls the reusable release.yml with your org's configuration.
-
 on:
   push:
-    branches: 
-    - main
+    branches:
+      - main
 
   workflow_dispatch:
     inputs:
       bump_override:
-        description: "Force a version bump"
+        description: "Version bump"
         type: choice
-        options: [auto, patch, minor, major]
+        options:
+          - auto
+          - patch
+          - minor
+          - major
         default: auto
+
       dry_run:
-        description: "Preview only, do not tag or publish"
+        description: "Preview only"
         type: boolean
         default: false
+
 permissions:
   contents: write
-  id-token: write
   pull-requests: read
 
 jobs:
   release:
     uses: ./.github/workflows/release.yml
+
     with:
-      # tag_prefix: ${{ vars.RELEASE_TAG_PREFIX }}
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}
+
     secrets: inherit

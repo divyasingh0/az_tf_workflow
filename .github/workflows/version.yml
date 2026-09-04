@@ -3,26 +3,13 @@ name: release-version
 # ============================================================
 # Reusable workflow for calculating the next semantic version.
 #
-# Release streams are independent.
-#
-# Examples:
+# Release streams are independent:
 #
 #   storage-v2.0.0
 #   network-v2.0.0
 #   workflow-v2.0.0
 #
-# Older V1 tags are intentionally ignored:
-#
-#   storage-v1.9.0
-#   network-v1.8.0
-#
-# The release workflow passes:
-#
-#   release_stream: storage-v2
-#
-# This workflow then looks ONLY at:
-#
-#   storage-v2.*
+# Older V1 tags are ignored.
 # ============================================================
 
 on:
@@ -30,61 +17,27 @@ on:
 
     inputs:
 
-      # --------------------------------------------------------
-      # Complete release stream.
-      #
-      # Example:
-      #
-      # storage-v2
-      # network-v2
-      # workflow-v2
-      #
-      # This is deliberately NOT just "storage-v".
-      # --------------------------------------------------------
-
       release_stream:
-        description: "Release stream, e.g. storage-v2 or network-v2"
+        description: "Release stream, e.g. storage-v2"
         required: true
         type: string
-
-      # --------------------------------------------------------
-      # Conventional Commit scope.
-      #
-      # Example:
-      #
-      # feat(storage): add private endpoint
-      #
-      # scope = storage
-      # --------------------------------------------------------
 
       scope:
         description: "Conventional Commit scope, e.g. storage"
         required: true
         type: string
 
-      # --------------------------------------------------------
-      # Bootstrap version.
-      #
-      # Normally the stream already has v2.0.0, so this is
-      # only used if the stream has no existing tag.
-      # --------------------------------------------------------
-
       initial_version:
-        description: "Baseline version when no release tag exists"
+        description: "Initial version for a new release stream"
         required: false
         type: string
         default: "2.0.0"
-
-      # --------------------------------------------------------
-      # Optional manual version override.
-      # --------------------------------------------------------
 
       bump_override:
         description: "auto|major|minor|patch"
         required: false
         type: string
         default: "auto"
-
 
     outputs:
 
@@ -124,20 +77,15 @@ jobs:
     outputs:
 
       current_version: ${{ steps.semver.outputs.current_version }}
-
       next_version: ${{ steps.semver.outputs.next_version }}
-
       next_tag: ${{ steps.semver.outputs.next_tag }}
-
       bump_type: ${{ steps.semver.outputs.bump_type }}
-
       has_changes: ${{ steps.semver.outputs.has_changes }}
-
 
     steps:
 
       # ========================================================
-      # Checkout complete repository history and all tags.
+      # Checkout complete history and all tags.
       # ========================================================
 
       - name: Checkout full history
@@ -149,7 +97,7 @@ jobs:
 
 
       # ========================================================
-      # Calculate next version.
+      # Calculate version.
       # ========================================================
 
       - name: Compute next semantic version
@@ -161,11 +109,8 @@ jobs:
         env:
 
           RELEASE_STREAM: ${{ inputs.release_stream }}
-
           SCOPE: ${{ inputs.scope }}
-
           INITIAL_VERSION: ${{ inputs.initial_version }}
-
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
 
         run: |
@@ -174,13 +119,10 @@ jobs:
 
 
           echo "=========================================="
-
           echo "Release Version Calculation"
-
           echo "=========================================="
 
           echo "Release stream : $RELEASE_STREAM"
-
           echo "Scope          : $SCOPE"
 
 
@@ -189,17 +131,15 @@ jobs:
           #
           # Example:
           #
-          # RELEASE_STREAM=storage-v2
-          #
-          # Matching:
-          #
           # storage-v2.0.0
           # storage-v2.1.0
           #
-          # NOT matching:
+          # These are considered.
           #
           # storage-v1.9.0
           # network-v2.0.0
+          #
+          # These are ignored.
           # ====================================================
 
           LAST_TAG=$(
@@ -209,33 +149,23 @@ jobs:
           )
 
 
+          # ====================================================
+          # DETERMINE CURRENT VERSION
+          # ====================================================
+
           if [[ -z "$LAST_TAG" ]]; then
 
             CURRENT_VERSION="$INITIAL_VERSION"
 
-            echo "No existing tag found for stream:"
-            echo "$RELEASE_STREAM"
-
-            echo "Using initial version:"
-            echo "$CURRENT_VERSION"
+            echo "No existing tag found."
+            echo "Using initial version: $CURRENT_VERSION"
 
           else
 
-            # --------------------------------------------------
-            # Remove the release stream prefix.
-            #
-            # storage-v2.0.0
-            #       ↓
-            # 2.0.0
-            # --------------------------------------------------
-
             CURRENT_VERSION="${LAST_TAG#"$RELEASE_STREAM."}"
 
-            echo "Latest release tag:"
-            echo "$LAST_TAG"
-
-            echo "Current version:"
-            echo "$CURRENT_VERSION"
+            echo "Latest tag: $LAST_TAG"
+            echo "Current version: $CURRENT_VERSION"
 
           fi
 
@@ -243,102 +173,179 @@ jobs:
           # ====================================================
           # DETERMINE COMMIT RANGE
           #
-          # Only commits after the latest release of THIS
-          # release stream are considered.
+          # Only commits after this release stream's latest
+          # release are evaluated.
           # ====================================================
 
           RANGE="HEAD"
 
           if [[ -n "$LAST_TAG" ]]; then
-
             RANGE="${LAST_TAG}..HEAD"
-
           fi
 
 
-          echo "Commit range:"
-          echo "$RANGE"
+          echo "Commit range: $RANGE"
 
 
           # ====================================================
-          # READ COMMIT SUBJECTS + BODIES
+          # PROCESS COMMITS INDIVIDUALLY
+          #
+          # This is important.
+          #
+          # We evaluate each commit together with its body.
+          # Therefore a BREAKING CHANGE is associated with the
+          # commit that contains it.
           # ====================================================
 
-          COMMITS=$(
+          BUMP="none"
+          HAS_CHANGES="false"
+
+
+          while IFS= read -r COMMIT; do
+
+            [[ -z "$COMMIT" ]] && continue
+
+
+            # --------------------------------------------------
+            # Extract subject.
+            # --------------------------------------------------
+
+            SUBJECT=$(echo "$COMMIT" | sed -n '1p')
+
+
+            echo ""
+            echo "Checking commit:"
+            echo "$SUBJECT"
+
+
+            # --------------------------------------------------
+            # Check whether commit belongs to this component.
+            #
+            # Examples:
+            #
+            # feat(storage): ...
+            # fix(storage): ...
+            # feat(storage)!: ...
+            #
+            # network commits are ignored during storage release.
+            # --------------------------------------------------
+
+            if [[ "$SUBJECT" =~ ^[a-zA-Z]+\\(${SCOPE}\\)(!)?: ]]; then
+
+              echo "Component match: YES"
+
+            else
+
+              echo "Component match: NO"
+              continue
+
+            fi
+
+
+            # --------------------------------------------------
+            # Check for BREAKING CHANGE.
+            #
+            # IMPORTANT:
+            #
+            # This check happens AFTER component matching.
+            #
+            # Therefore:
+            #
+            # feat(storage)!: ...
+            #
+            # can cause storage major release.
+            #
+            # But:
+            #
+            # feat(network)!: ...
+            #
+            # cannot cause storage major release.
+            # --------------------------------------------------
+
+            if echo "$COMMIT" |
+              grep -qiE \
+              "^[a-zA-Z]+\\(${SCOPE}\\)!:|^BREAKING CHANGE:|^BREAKING-CHANGE:"; then
+
+              echo "Breaking change detected."
+
+              BUMP="major"
+              HAS_CHANGES="true"
+
+              # Major is highest priority.
+              # No need to process further for bump calculation.
+              continue
+
+            fi
+
+
+            # --------------------------------------------------
+            # Feature.
+            # --------------------------------------------------
+
+            if [[ "$SUBJECT" =~ ^feat\(${SCOPE}\): ]]; then
+
+              echo "Feature detected."
+
+              HAS_CHANGES="true"
+
+              # Do not downgrade an already detected major bump.
+              if [[ "$BUMP" != "major" ]]; then
+                BUMP="minor"
+              fi
+
+              continue
+
+            fi
+
+
+            # --------------------------------------------------
+            # Bug fix.
+            # --------------------------------------------------
+
+            if [[ "$SUBJECT" =~ ^fix\(${SCOPE}\): ]]; then
+
+              echo "Bug fix detected."
+
+              HAS_CHANGES="true"
+
+              # Feature has higher priority than fix.
+              if [[ "$BUMP" == "none" ]]; then
+                BUMP="patch"
+              fi
+
+            fi
+
+          done < <(
             git log "$RANGE" \
               --pretty=format:"%s%n%b%n---" \
-              --no-merges
+              --no-merges |
+            awk '
+              BEGIN {
+                RS="---"
+                ORS=""
+              }
+              {
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                if (length($0) > 0)
+                  print $0 "\n"
+              }
+            '
           )
 
 
           # ====================================================
-          # MATCH ONLY THIS COMPONENT'S CONVENTIONAL COMMITS
-          #
-          # Examples:
-          #
-          # feat(storage):
-          # fix(storage):
-          # feat(storage)!:
-          #
-          # Other components are ignored.
-          # ====================================================
-
-          SCOPE_RE="\\(${SCOPE}\\)"
-
-
-          HAS_CHANGES="false"
-
-          BUMP="none"
-
-
-          # ====================================================
           # MANUAL OVERRIDE
+          #
+          # Manual override always wins.
           # ====================================================
 
           if [[ "$BUMP_OVERRIDE" != "auto" ]]; then
 
             BUMP="$BUMP_OVERRIDE"
-
             HAS_CHANGES="true"
 
-
-          # ====================================================
-          # BREAKING CHANGE
-          # ====================================================
-
-          elif echo "$COMMITS" |
-            grep -qiE \
-            "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
-
-            BUMP="major"
-
-            HAS_CHANGES="true"
-
-
-          # ====================================================
-          # FEATURE
-          # ====================================================
-
-          elif echo "$COMMITS" |
-            grep -qE \
-            "^feat${SCOPE_RE}:"; then
-
-            BUMP="minor"
-
-            HAS_CHANGES="true"
-
-
-          # ====================================================
-          # BUG FIX
-          # ====================================================
-
-          elif echo "$COMMITS" |
-            grep -qE \
-            "^fix${SCOPE_RE}:"; then
-
-            BUMP="patch"
-
-            HAS_CHANGES="true"
+            echo ""
+            echo "Manual bump override: $BUMP"
 
           fi
 
@@ -351,8 +358,6 @@ jobs:
 
             echo ""
             echo "No releasable commits found."
-            echo "Scope: $SCOPE"
-            echo "Stream: $RELEASE_STREAM"
 
             {
               echo "has_changes=false"
@@ -379,36 +384,25 @@ jobs:
             major)
 
               MAJOR=$((MAJOR + 1))
-
               MINOR=0
-
               PATCH=0
-
               ;;
-
 
             minor)
 
               MINOR=$((MINOR + 1))
-
               PATCH=0
-
               ;;
-
 
             patch)
 
               PATCH=$((PATCH + 1))
-
               ;;
-
 
             *)
 
               echo "::error::Invalid bump type: $BUMP"
-
               exit 1
-
               ;;
 
           esac
@@ -416,36 +410,23 @@ jobs:
 
           NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
 
-
-          # ====================================================
-          # BUILD FINAL TAG
-          #
-          # storage-v2 + 1.1.0
-          #       ↓
-          # storage-v2.1.0
-          # ====================================================
-
           NEXT_TAG="${RELEASE_STREAM}.${NEXT_VERSION}"
 
 
+          # ====================================================
+          # DISPLAY RESULT
+          # ====================================================
+
           echo ""
-
           echo "=========================================="
-
           echo "Release detected"
-
           echo "=========================================="
 
           echo "Scope          : $SCOPE"
-
           echo "Release stream : $RELEASE_STREAM"
-
           echo "Current        : $CURRENT_VERSION"
-
           echo "Bump           : $BUMP"
-
           echo "Next version   : $NEXT_VERSION"
-
           echo "Next tag       : $NEXT_TAG"
 
           echo "=========================================="

@@ -1,81 +1,23 @@
 name: Release
 
-# ============================================================
-# CENTRALIZED REUSABLE RELEASE WORKFLOW
-#
-# Purpose:
-#   - Determine which component/release stream should be released
-#   - Always target the V2 release stream
-#   - Calculate the next SemVer version
-#   - Generate PR-based release notes
-#   - Create the annotated Git tag
-#   - Create the GitHub Release
-#
-# Example:
-#
-#   feat(storage): add private endpoint
-#
-#       ↓
-#
-#   storage
-#       ↓
-#
-#   storage-v2
-#       ↓
-#
-#   storage-v2.0.0
-#       ↓
-#
-#   storage-v2.1.0
-#
-# Historical tags such as:
-#
-#   storage-v1.5.0
-#
-# are NEVER considered.
-# ============================================================
-
 on:
   workflow_call:
-
     inputs:
 
-      # --------------------------------------------------------
-      # Initial version for a release stream.
-      #
-      # Your newly created streams already start at 2.0.0.
-      # Therefore this is mainly a bootstrap value.
-      # --------------------------------------------------------
-
       initial_version:
-        description: "Initial version for a new release stream"
         required: false
         type: string
         default: "2.0.0"
 
-      # --------------------------------------------------------
-      # Allows manual override of the calculated SemVer bump.
-      # --------------------------------------------------------
-
       bump_override:
-        description: "auto|patch|minor|major"
         required: false
         type: string
         default: "auto"
 
-      # --------------------------------------------------------
-      # Dry run.
-      # --------------------------------------------------------
-
       dry_run:
-        description: "Calculate release without creating tag/release"
         required: false
         type: boolean
         default: false
-
-      # --------------------------------------------------------
-      # Optional GitHub Release settings.
-      # --------------------------------------------------------
 
       draft:
         required: false
@@ -86,11 +28,6 @@ on:
         required: false
         type: boolean
         default: false
-
-      target_commitish:
-        required: false
-        type: string
-        default: ""
 
     outputs:
 
@@ -107,18 +44,10 @@ on:
         value: ${{ jobs.version.outputs.bump_type }}
 
 
-# ============================================================
-# PERMISSIONS
-# ============================================================
-
 permissions:
   contents: write
   pull-requests: read
 
-
-# ============================================================
-# PREVENT TWO RELEASES RUNNING AT THE SAME TIME
-# ============================================================
 
 concurrency:
   group: release-${{ github.repository }}-${{ github.ref }}
@@ -129,265 +58,147 @@ jobs:
 
   # ==========================================================
   # JOB 1
+  # Determine component from the commit message.
   #
-  # Determine the component from the Conventional Commit.
-  #
-  # Example:
-  #
-  # feat(storage): add endpoint
-  #
-  # Component = storage
-  #
-  # Then construct:
-  #
-  # storage-v
-  #
-  # IMPORTANT:
-  #
-  # We explicitly use V2.
-  #
-  # storage-v1.x.x is historical and ignored.
+  # feat(storage): add private endpoint
+  #              ↓
+  #           storage
+  #              ↓
+  #           storage-v2
   # ==========================================================
 
-  determine-stream:
+  determine:
 
     name: Determine Release Stream
 
     runs-on: ubuntu-latest
 
     outputs:
-
-      component:
-        value: ${{ steps.stream.outputs.component }}
-
-      tag_prefix:
-        value: ${{ steps.stream.outputs.tag_prefix }}
+      component: ${{ steps.stream.outputs.component }}
+      release_stream: ${{ steps.stream.outputs.release_stream }}
 
     steps:
 
-      # --------------------------------------------------------
-      # Get complete repository history and all tags.
-      # --------------------------------------------------------
-
-      - name: Checkout repository
-
+      - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
         with:
           fetch-depth: 0
 
 
-      # ========================================================
-      # DETERMINE RELEASE STREAM
-      # ========================================================
-
-      - name: Determine release stream
-
+      - name: Determine stream
         id: stream
-
         shell: bash
 
         run: |
 
           set -euo pipefail
 
-          echo "=========================================="
+          COMMIT=$(git log -1 --pretty=format:"%s")
 
-          echo "Determine Release Stream"
-
-          echo "=========================================="
+          echo "Commit: $COMMIT"
 
 
-          # ----------------------------------------------------
-          # Read the latest commit message.
+          # --------------------------------------------------
+          # Extract Conventional Commit scope.
           #
           # Example:
           #
-          # feat(storage): add private endpoint
-          # ----------------------------------------------------
-
-          COMMIT_SUBJECT=$(git log -1 --pretty=format:"%s")
-
-          echo "Commit: $COMMIT_SUBJECT"
-
-
-          # ----------------------------------------------------
-          # Extract Conventional Commit scope.
-          #
-          # feat(storage): ...
-          #      ^^^^^^^
+          # feat(storage): add endpoint
           #
           # Result:
           #
           # storage
-          # ----------------------------------------------------
+          # --------------------------------------------------
 
-          COMPONENT=""
-
-          if [[ "$COMMIT_SUBJECT" =~ ^[a-zA-Z]+\\(([^)]+)\\)(!)?: ]]; then
+          if [[ "$COMMIT" =~ ^[a-zA-Z]+\\(([^)]+)\\)(!)?: ]]; then
 
             COMPONENT="${BASH_REMATCH[1]}"
 
-          fi
+          else
 
+            echo "::error::Commit must contain a component scope."
 
-          # ----------------------------------------------------
-          # Scope is mandatory for your multi-tag repository.
-          #
-          # We do NOT guess the component.
-          # ----------------------------------------------------
-
-          if [[ -z "$COMPONENT" ]]; then
-
-            echo "::error::No release component found in commit message."
-
-            echo ""
-
-            echo "For a multi-tag repository, use a Conventional Commit such as:"
-
-            echo ""
-
-            echo "  feat(storage): add private endpoint"
-
-            echo "  fix(network): correct subnet configuration"
-
-            echo "  feat(workflow): improve release workflow"
+            echo "Example:"
+            echo "feat(storage): add private endpoint"
 
             exit 1
 
           fi
 
+
+          # --------------------------------------------------
+          # Every component has its own V2 release stream.
+          #
+          # storage-v2
+          # network-v2
+          # workflow-v2
+          # --------------------------------------------------
+
+          RELEASE_STREAM="${COMPONENT}-v2"
 
           echo "Component: $COMPONENT"
+          echo "Release stream: $RELEASE_STREAM"
 
 
-          # ----------------------------------------------------
-          # IMPORTANT:
+          # --------------------------------------------------
+          # Verify that the V2 stream already exists.
           #
-          # The release stream is ALWAYS V2.
-          #
-          # Example:
-          #
-          # storage → storage-v2
-          # network → network-v2
-          # workflow → workflow-v2
-          #
-          # This prevents old V1 tags from being selected.
-          # ----------------------------------------------------
+          # This prevents accidentally creating a new stream.
+          # --------------------------------------------------
 
-          TAG_PREFIX="${COMPONENT}-v2."
+          if ! git tag --list "${RELEASE_STREAM}.*" | grep -q .; then
 
+            echo "::error::No V2 release tag found for ${RELEASE_STREAM}."
 
-          echo "Release stream: ${COMPONENT}-v2"
-
-          echo "Tag pattern: ${TAG_PREFIX}x.x"
-
-
-          # ----------------------------------------------------
-          # Verify that at least one V2 tag exists.
-          #
-          # Example:
-          #
-          # storage-v2.0.0
-          # ----------------------------------------------------
-
-          MATCHING_TAG=$(
-            git tag --list "${COMPONENT}-v2.*" |
-            head -n1 || true
-          )
-
-
-          if [[ -z "$MATCHING_TAG" ]]; then
-
-            echo "::error::No V2 release tag found for component '$COMPONENT'."
-
-            echo ""
-
-            echo "Expected baseline tag:"
-
-            echo "  ${COMPONENT}-v2.0.0"
-
-            echo ""
-
-            echo "Existing tags for this component:"
-
-            git tag --list "${COMPONENT}-v*"
+            echo "Expected baseline:"
+            echo "${RELEASE_STREAM}.0.0"
 
             exit 1
 
           fi
 
 
-          echo "Found V2 baseline: $MATCHING_TAG"
-
-
-          # ----------------------------------------------------
-          # Export values.
-          #
-          # tag_prefix will be:
-          #
-          # storage-v
-          #
-          # network-v
-          #
-          # workflow-v
-          #
-          # This is what release-version.yml will use.
-          # ----------------------------------------------------
-
-          RELEASE_PREFIX="${COMPONENT}-v"
-
-          {
-
-            echo "component=$COMPONENT"
-
-            echo "tag_prefix=$RELEASE_PREFIX"
-
-          } >> "$GITHUB_OUTPUT"
+          echo "component=$COMPONENT" >> "$GITHUB_OUTPUT"
+          echo "release_stream=$RELEASE_STREAM" >> "$GITHUB_OUTPUT"
 
 
   # ==========================================================
   # JOB 2
-  #
-  # Calculate SemVer for ONLY the selected V2 stream.
-  #
-  # Example:
-  #
-  # storage-v2.0.0
-  #
-  #        ↓
-  #
-  # storage-v2.1.0
-  #
-  # NOTE:
-  #
-  # This section intentionally passes the complete V2 scope
-  # information to release-version.yml.
+  # Calculate the next version for ONLY the selected stream.
   # ==========================================================
 
   version:
 
     name: Calculate Version
 
-    needs: determine-stream
+    needs: determine
 
     uses: ./.github/workflows/release-version.yml
 
     with:
-
-      tag_prefix: ${{ needs.determine-stream.outputs.tag_prefix }}
-
-      scope: ${{ needs.determine-stream.outputs.component }}
-
+      release_stream: ${{ needs.determine.outputs.release_stream }}
+      scope: ${{ needs.determine.outputs.component }}
       initial_version: ${{ inputs.initial_version }}
-
       bump_override: ${{ inputs.bump_override }}
 
 
   # ==========================================================
   # JOB 3
   #
-  # Generate release notes + create tag + GitHub Release.
+  # Generate custom PR-based release notes.
+  #
+  # Only:
+  #
+  # 1. PRs for the selected component
+  # 2. PRs merged after the component's previous V2 tag
+  #
+  # are included.
+  #
+  # Release notes use ONLY the PR's:
+  #
+  # ## Summary
+  #
+  # section.
   # ==========================================================
 
   release:
@@ -395,7 +206,7 @@ jobs:
     name: Create Release
 
     needs:
-      - determine-stream
+      - determine
       - version
 
     if: needs.version.outputs.has_changes == 'true'
@@ -411,14 +222,8 @@ jobs:
 
     steps:
 
-      # --------------------------------------------------------
-      # Full history is required for release/tag comparison.
-      # --------------------------------------------------------
-
-      - name: Checkout repository
-
+      - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-
         with:
           fetch-depth: 0
 
@@ -434,14 +239,10 @@ jobs:
         shell: bash
 
         env:
-
           GH_TOKEN: ${{ github.token }}
-
           REPOSITORY: ${{ github.repository }}
-
-          COMPONENT: ${{ needs.determine-stream.outputs.component }}
-
-          TAG_PREFIX: ${{ needs.determine-stream.outputs.tag_prefix }}
+          COMPONENT: ${{ needs.determine.outputs.component }}
+          RELEASE_STREAM: ${{ needs.determine.outputs.release_stream }}
 
         run: |
 
@@ -449,44 +250,36 @@ jobs:
 
 
           echo "=========================================="
-
-          echo "Generate Release Notes"
-
+          echo "Generating Release Notes"
           echo "=========================================="
 
-
-          echo "Component : $COMPONENT"
-
-          echo "Tag prefix: $TAG_PREFIX"
+          echo "Component      : $COMPONENT"
+          echo "Release stream : $RELEASE_STREAM"
 
 
           # ----------------------------------------------------
-          # Find latest V2 tag ONLY.
+          # Find the latest tag ONLY for this V2 stream.
           #
-          # IMPORTANT:
+          # Example:
           #
-          # storage-v1.5.0
+          # storage-v2.0.0
+          # storage-v2.1.0
           #
-          # will NOT match the required V2 stream.
-          #
-          # We explicitly filter to:
-          #
-          # storage-v2.*
+          # storage-v1.x.x is ignored.
           # ----------------------------------------------------
 
           LAST_TAG=$(
-            git tag \
-              --list "${COMPONENT}-v2.*" \
+            git tag --list "${RELEASE_STREAM}.*" \
               --sort=-v:refname |
             head -n1 || true
           )
 
 
-          echo "Previous V2 tag: ${LAST_TAG:-none}"
+          echo "Previous release: ${LAST_TAG:-none}"
 
 
           # ----------------------------------------------------
-          # Find merged PRs.
+          # Get merged PRs from main.
           # ----------------------------------------------------
 
           PR_DATA=$(
@@ -499,34 +292,26 @@ jobs:
           )
 
 
+          BREAKING_FILE=$(mktemp)
           FEATURES_FILE=$(mktemp)
-
           FIXES_FILE=$(mktemp)
 
-          BREAKING_FILE=$(mktemp)
-
-
-          touch "$FEATURES_FILE"
-
-          touch "$FIXES_FILE"
 
           touch "$BREAKING_FILE"
+          touch "$FEATURES_FILE"
+          touch "$FIXES_FILE"
 
 
           # ====================================================
-          # PROCESS PRs
+          # PROCESS EACH PR
           # ====================================================
 
-          echo "$PR_DATA" | jq -c '.[]' | while read -r PR; do
+          while read -r PR; do
 
             PR_NUMBER=$(echo "$PR" | jq -r '.number')
-
             PR_TITLE=$(echo "$PR" | jq -r '.title')
-
             PR_BODY=$(echo "$PR" | jq -r '.body // ""')
-
             PR_URL=$(echo "$PR" | jq -r '.url')
-
             MERGE_SHA=$(echo "$PR" | jq -r '.mergeCommit.oid // ""')
 
 
@@ -534,42 +319,35 @@ jobs:
             # Ignore PRs without merge commit.
             # --------------------------------------------------
 
-            if [[ -z "$MERGE_SHA" ]]; then
-
+            if [[ -z "$MERGE_SHA" || "$MERGE_SHA" == "null" ]]; then
               continue
-
             fi
 
 
             # --------------------------------------------------
-            # PR must belong to the selected component.
+            # Include ONLY PRs for this component.
             #
-            # Example:
+            # storage:
             #
-            # Selected:
-            # storage
-            #
-            # Include:
             # feat(storage): ...
+            # fix(storage): ...
             #
-            # Exclude:
-            # feat(network): ...
+            # network PRs are ignored.
             # --------------------------------------------------
 
-            if ! echo "$PR_TITLE" | grep -qE \
+            if ! echo "$PR_TITLE" |
+              grep -qE \
               "^[a-zA-Z]+\\(${COMPONENT}\\)!?:"
             then
-
               continue
-
             fi
 
 
             # --------------------------------------------------
-            # PR must be after the latest V2 release.
+            # Include ONLY PRs after the previous release tag.
             #
-            # This is the important part that prevents old V1
-            # history from appearing in the release notes.
+            # This is what prevents old release history from
+            # appearing in the new release notes.
             # --------------------------------------------------
 
             if [[ -n "$LAST_TAG" ]]; then
@@ -578,72 +356,64 @@ jobs:
                 --is-ancestor "$LAST_TAG" "$MERGE_SHA" \
                 2>/dev/null
               then
-
                 continue
-
               fi
 
             fi
 
 
             # ==================================================
-            # Extract Summary from PR description.
-            #
-            # Recommended PR format:
-            #
-            # ## Summary
-            #
-            # Added private endpoint configuration.
-            #
-            # ## Testing
-            #
-            # Terraform plan validated successfully.
-            #
-            # Only Summary is used in release notes.
+            # EXTRACT ## Summary FROM PR DESCRIPTION
             # ==================================================
 
             SUMMARY=$(
               echo "$PR_BODY" |
               awk '
-                /^## Summary/ {
-                  flag=1
+                /^## Summary[[:space:]]*$/ {
+                  found=1
                   next
                 }
 
                 /^## / {
-                  flag=0
+                  if (found) exit
                 }
 
-                flag
+                found {
+                  print
+                }
               '
             )
 
 
+            # Remove empty lines at beginning/end.
             SUMMARY=$(
               echo "$SUMMARY" |
               sed '/^[[:space:]]*$/d'
             )
 
 
+            # --------------------------------------------------
+            # If Summary is missing, use a controlled fallback.
+            # --------------------------------------------------
+
+            if [[ -z "$SUMMARY" ]]; then
+              SUMMARY="No summary provided in the PR description."
+            fi
+
+
             # ==================================================
-            # Build release-note entry.
+            # BUILD RELEASE NOTE ENTRY
             # ==================================================
 
             ENTRY="### ${PR_TITLE} (#${PR_NUMBER})"$'\n\n'
 
-
-            if [[ -n "$SUMMARY" ]]; then
-
-              ENTRY+="$SUMMARY"$'\n\n'
-
-            fi
-
+            ENTRY+="${SUMMARY}"$'\n\n'
 
             ENTRY+="[View PR #${PR_NUMBER}](${PR_URL})"$'\n'
 
 
             # ==================================================
-            # Categorize PR.
+            # CATEGORIZE PR
             # ==================================================
 
             if echo "$PR_TITLE" |
@@ -651,8 +421,7 @@ jobs:
               "^[a-zA-Z]+\\([^)]*\\)!:"
             then
 
-              printf '%s\n\n' "$ENTRY" \
-                >> "$BREAKING_FILE"
+              printf '%s\n\n' "$ENTRY" >> "$BREAKING_FILE"
 
 
             elif echo "$PR_TITLE" |
@@ -660,8 +429,7 @@ jobs:
               "^feat\\([^)]*\\):"
             then
 
-              printf '%s\n\n' "$ENTRY" \
-                >> "$FEATURES_FILE"
+              printf '%s\n\n' "$ENTRY" >> "$FEATURES_FILE"
 
 
             elif echo "$PR_TITLE" |
@@ -669,12 +437,13 @@ jobs:
               "^fix\\([^)]*\\):"
             then
 
-              printf '%s\n\n' "$ENTRY" \
-                >> "$FIXES_FILE"
+              printf '%s\n\n' "$ENTRY" >> "$FIXES_FILE"
 
             fi
 
-          done
+          done < <(
+            echo "$PR_DATA" | jq -c '.[]'
+          )
 
 
           # ====================================================
@@ -685,18 +454,16 @@ jobs:
 
 
           echo "# ${COMPONENT} V2 Release" >> "$NOTES_FILE"
-
           echo "" >> "$NOTES_FILE"
 
 
           # ----------------------------------------------------
-          # Breaking changes
+          # Breaking Changes
           # ----------------------------------------------------
 
           if [[ -s "$BREAKING_FILE" ]]; then
 
             echo "## ⚠️ Breaking Changes" >> "$NOTES_FILE"
-
             echo "" >> "$NOTES_FILE"
 
             cat "$BREAKING_FILE" >> "$NOTES_FILE"
@@ -711,7 +478,6 @@ jobs:
           if [[ -s "$FEATURES_FILE" ]]; then
 
             echo "## 🚀 Features" >> "$NOTES_FILE"
-
             echo "" >> "$NOTES_FILE"
 
             cat "$FEATURES_FILE" >> "$NOTES_FILE"
@@ -720,13 +486,12 @@ jobs:
 
 
           # ----------------------------------------------------
-          # Bug fixes
+          # Bug Fixes
           # ----------------------------------------------------
 
           if [[ -s "$FIXES_FILE" ]]; then
 
             echo "## 🐛 Bug Fixes" >> "$NOTES_FILE"
-
             echo "" >> "$NOTES_FILE"
 
             cat "$FIXES_FILE" >> "$NOTES_FILE"
@@ -734,18 +499,14 @@ jobs:
           fi
 
 
-          # ====================================================
-          # Export release notes.
-          # ====================================================
+          # ----------------------------------------------------
+          # Export release notes to GitHub Actions output.
+          # ----------------------------------------------------
 
           {
-
             echo "changelog<<RELEASE_NOTES_EOF"
-
             cat "$NOTES_FILE"
-
             echo "RELEASE_NOTES_EOF"
-
           } >> "$GITHUB_OUTPUT"
 
 
@@ -760,13 +521,9 @@ jobs:
         shell: bash
 
         env:
-
           NEXT_TAG: ${{ needs.version.outputs.next_tag }}
-
           NEXT_VERSION: ${{ needs.version.outputs.next_version }}
-
           BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
-
           DRY_RUN: ${{ inputs.dry_run }}
 
         run: |
@@ -775,40 +532,44 @@ jobs:
 
 
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-
           echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+
+
+          echo "Next tag: $NEXT_TAG"
+          echo "Next version: $NEXT_VERSION"
+          echo "Bump type: $BUMP_TYPE"
 
 
           if [[ "$DRY_RUN" == "true" ]]; then
 
-            echo "::notice::Dry run."
-
-            echo "::notice::Would create tag: $NEXT_TAG"
-
-            echo "::notice::Bump type: $BUMP_TYPE"
+            echo "::notice::Dry run - no tag will be created."
 
             exit 0
 
           fi
 
 
-          # ----------------------------------------------------
-          # Create annotated tag.
-          # ----------------------------------------------------
+          git config user.name "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
 
           git tag -a "$NEXT_TAG" \
             -m "Release $NEXT_TAG"
 
-
-          # ----------------------------------------------------
-          # Push tag.
-          # ----------------------------------------------------
 
           git push origin "$NEXT_TAG"
 
 
       # ========================================================
       # CREATE GITHUB RELEASE
+      #
+      # IMPORTANT:
+      #
+      # --generate-notes is NOT used.
+      #
+      # We provide our own standardized PR-based notes.
       # ========================================================
 
       - name: Create GitHub Release
@@ -816,18 +577,11 @@ jobs:
         if: inputs.dry_run == false
 
         env:
-
           GH_TOKEN: ${{ github.token }}
-
           TAG: ${{ steps.tag.outputs.tag }}
-
           NOTES: ${{ steps.changelog.outputs.changelog }}
-
           DRAFT: ${{ inputs.draft }}
-
           PRERELEASE: ${{ inputs.prerelease }}
-
-          TARGET: ${{ inputs.target_commitish }}
 
         run: |
 
@@ -841,33 +595,14 @@ jobs:
 
 
           if [[ "$DRAFT" == "true" ]]; then
-
             ARGS+=(--draft)
-
           fi
 
 
           if [[ "$PRERELEASE" == "true" ]]; then
-
             ARGS+=(--prerelease)
-
           fi
 
-
-          if [[ -n "$TARGET" ]]; then
-
-            ARGS+=(--target "$TARGET")
-
-          fi
-
-
-          # ----------------------------------------------------
-          # IMPORTANT:
-          #
-          # Do NOT use --generate-notes.
-          #
-          # We already generated standardized PR-based notes.
-          # ----------------------------------------------------
 
           gh release create "$TAG" "${ARGS[@]}"
 
@@ -883,23 +618,13 @@ jobs:
         run: |
 
           {
-
             echo "## Release Summary"
-
             echo ""
-
-            echo "- Component: \`${{ needs.determine-stream.outputs.component }}\`"
-
-            echo "- Release stream: \`${{ needs.determine-stream.outputs.component }}-v2\`"
-
+            echo "- Component: \`${{ needs.determine.outputs.component }}\`"
+            echo "- Release stream: \`${{ needs.determine.outputs.release_stream }}\`"
             echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
-
             echo "- Next version: \`${{ needs.version.outputs.next_version }}\`"
-
             echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
-
             echo "- Released tag: \`${{ needs.version.outputs.next_tag }}\`"
-
             echo "- Dry run: \`${{ inputs.dry_run }}\`"
-
           } >> "$GITHUB_STEP_SUMMARY"
