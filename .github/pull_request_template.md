@@ -2,17 +2,15 @@
 
 ### Summary
 
-<!-- Provide a concise summary of the change. -->
+<!-- Short business/technical summary of the change -->
 
 ### Changes
 
-<!-- Describe what changed. -->
+<!-- Describe what changed -->
 
 ### Affected Component
 
-<!-- Example: testapp -->
-
-testapp
+<!-- Example: storage, keyvault, vm, edna -->
 
 ### Impact
 
@@ -30,5 +28,12 @@ If yes, explain:
 
 ### Migration / Upgrade Notes
 
-<!-- Required when breaking changes are introduced. -->
+<!-- Required when breaking changes are introduced -->
 
+### Validation
+
+- [ ] Terraform fmt
+- [ ] Terraform validate
+- [ ] TFLint
+- [ ] Terraform plan validated
+- [ ] Tests completed

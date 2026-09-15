@@ -1,0 +1,57 @@
+{
+  "separate-pull-requests": true,
+  "include-component-in-tag": true,
+  "tag-separator": "-",
+  "packages": {
+    "storage": {
+      "release-type": "simple",
+      "package-name": "storage",
+      "component": "storage"
+    },
+    "keyvault": {
+      "release-type": "simple",
+      "package-name": "keyvault",
+      "component": "keyvault"
+    },
+    "vm": {
+      "release-type": "simple",
+      "package-name": "vm",
+      "component": "vm"
+    },
+    "network": {
+      "release-type": "simple",
+      "package-name": "network",
+      "component": "network"
+    },
+    "functionapp": {
+      "release-type": "simple",
+      "package-name": "functionapp",
+      "component": "functionapp"
+    },
+    "webapp": {
+      "release-type": "simple",
+      "package-name": "webapp",
+      "component": "webapp"
+    },
+    "cosmos": {
+      "release-type": "simple",
+      "package-name": "cosmos",
+      "component": "cosmos"
+    },
+    "monitoring": {
+      "release-type": "simple",
+      "package-name": "monitoring",
+      "component": "monitoring"
+    },
+    "identity": {
+      "release-type": "simple",
+      "package-name": "identity",
+      "component": "identity"
+    },
+    "private-endpoint": {
+      "release-type": "simple",
+      "package-name": "private-endpoint",
+      "component": "private-endpoint"
+    }
+  }
+}
