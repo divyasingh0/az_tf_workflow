@@ -1,0 +1,88 @@
+name: Centralized Release Please
+
+on:
+  workflow_call:
+    inputs:
+      release_mode:
+        description: "single for one application, manifest for independent components"
+        required: false
+        type: string
+        default: single
+      release_type:
+        description: "Release Please release type for single-package repositories"
+        required: false
+        type: string
+        default: simple
+      package_name:
+        description: "Application package/component name for single-package repositories"
+        required: false
+        type: string
+        default: ""
+      initial_version:
+        description: "Initial version for a single-package repository when no release exists"
+        required: false
+        type: string
+        default: 2.0.0
+      target_branch:
+        description: "Branch receiving the Release PR"
+        required: false
+        type: string
+        default: main
+      config_file:
+        description: "Release Please manifest configuration file"
+        required: false
+        type: string
+        default: .release-please-config.json
+      manifest_file:
+        description: "Release Please manifest state file"
+        required: false
+        type: string
+        default: .release-please-manifest.json
+    secrets:
+      RELEASE_PLEASE_TOKEN:
+        description: "Optional GitHub App or PAT token with contents and pull-request write access"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.repository }}-${{ inputs.release_mode }}-${{ inputs.target_branch }}
+  cancel-in-progress: false
+
+jobs:
+  single:
+    name: Release single application
+    if: inputs.release_mode == 'single'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Run Release Please
+        uses: googleapis/release-please-action@v4.2.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          target-branch: ${{ inputs.target_branch }}
+          release-type: ${{ inputs.release_type }}
+          package-name: ${{ inputs.package_name }}
+          initial-version: ${{ inputs.initial_version }}
+          config-file: ${{ inputs.config_file }}
+
+  manifest:
+    name: Release independent components
+    if: inputs.release_mode == 'manifest'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Run Release Please manifest mode
+        uses: googleapis/release-please-action@v4.2.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
+          target-branch: ${{ inputs.target_branch }}
+          config-file: ${{ inputs.config_file }}
+          manifest-file: ${{ inputs.manifest_file }}
+          separate-pull-requests: true

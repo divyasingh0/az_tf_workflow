@@ -1,33 +1,39 @@
-```markdown
 ## Release Notes
 
-### Overview
+### Summary
 
-<!-- Provide a concise description of the change and its purpose. -->
+<!-- Short business/technical summary of the change -->
 
-### Implementation
+### Changes
 
-<!-- Describe the key changes implemented. -->
+<!-- Describe what changed -->
 
 ### Affected Component
 
-**Component:** 
+<!-- Example: storage, keyvault, vm, edna -->
 
-### Business / Technical Impact
+### Impact
 
-**Impact:** None / Low / Medium / High
-
-<!-- Briefly explain the impact if applicable. -->
+- [ ] No impact
+- [ ] Low
+- [ ] Medium
+- [ ] High
 
 ### Breaking Changes
 
-**Breaking Changes:** No / Yes
+- [ ] No
+- [ ] Yes
 
-<!-- If yes, provide details. -->
+If yes, explain:
 
-### Migration / Upgrade
+### Migration / Upgrade Notes
 
-**Required:** No / Yes
+<!-- Required when breaking changes are introduced -->
 
-<!-- If required, describe the required migration or upgrade steps. -->
-```
+### Validation
+
+- [ ] Terraform fmt
+- [ ] Terraform validate
+- [ ] TFLint
+- [ ] Terraform plan validated
+- [ ] Tests completed

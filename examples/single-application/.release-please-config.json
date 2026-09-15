@@ -1,0 +1,25 @@
+{
+  "release-type": "simple",
+  "package-name": "edna",
+  "initial-version": "2.0.0",
+  "include-component-in-tag": true,
+  "tag-separator": "-",
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "revert",
+      "section": "Reverts"
+    }
+  ]
+}
