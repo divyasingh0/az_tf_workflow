@@ -1,10 +1,9 @@
 {
+  "release-type": "simple",
   "packages": {
     ".": {
-      "release-type": "simple",
       "component": "workflow",
-      "include-component-in-tag": true,
-      "changelog-path": "CHANGELOG.md"
+      "include-component-in-tag": true
     }
   }
 }
