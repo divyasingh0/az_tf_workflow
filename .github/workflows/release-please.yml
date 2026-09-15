@@ -1,21 +1,77 @@
-name: Central Release Please
+name: Release Please
 
 on:
-  workflow_call:
+  push:
+    branches: [main]
 
 permissions:
   contents: write
   pull-requests: write
+  issues: write
 
 jobs:
-  release:
-    name: Release Please
+  release-please:
     runs-on: ubuntu-latest
-
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      all_outputs: ${{ toJSON(steps.release.outputs) }}
     steps:
       - name: Run Release Please
-        uses: release-please-oss/release-please-action@v5
+        id: release
+        uses: googleapis/release-please-action@v4
         with:
-          token: ${{ github.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: main
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  enrich-release-notes:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enrich each released tag with PR Release Notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          echo '${{ needs.release-please.outputs.all_outputs }}' > /tmp/outputs.json
+
+          jq -r 'to_entries[] | select(.key | endswith("--tag_name")) | .value' /tmp/outputs.json > /tmp/tags.txt
+          jq -r 'to_entries[] | select(.key == "tag_name") | .value' /tmp/outputs.json >> /tmp/tags.txt
+
+          while read -r TAG; do
+            [ -z "$TAG" ] && continue
+            echo "Processing tag: $TAG"
+
+            COMPONENT=$(echo "$TAG" | sed -E 's/-v[0-9]+\.[0-9]+\.[0-9]+$//')
+            PREV_TAG=$(git tag --list "${COMPONENT}-v*" --sort=-v:refname | grep -vx "$TAG" | head -n1 || true)
+            RANGE="${PREV_TAG:+$PREV_TAG..}$TAG"
+
+            NOTES_FILE="/tmp/notes-${TAG}.md"
+            echo "### Developer-submitted Release Notes" > "$NOTES_FILE"
+
+            for SHA in $(git log $RANGE --pretty=%H 2>/dev/null || true); do
+              PR_BODY=$(gh api "repos/${REPO}/commits/${SHA}/pulls" 2>/dev/null | jq -r '.[0].body // empty')
+              if [ -n "$PR_BODY" ]; then
+                SECTION=$(echo "$PR_BODY" | awk '/^## Release Notes/{flag=1} flag{print} /^### Validation/{if(flag){print; exit}}')
+                if [ -n "$SECTION" ]; then
+                  { echo ""; echo "---"; echo "$SECTION"; } >> "$NOTES_FILE"
+                fi
+              fi
+            done
+
+            EXISTING=$(gh release view "$TAG" --json body -q .body 2>/dev/null || echo "")
+            { echo "$EXISTING"; echo ""; cat "$NOTES_FILE"; } > /tmp/final-notes.md
+
+            gh release edit "$TAG" --notes-file /tmp/final-notes.md
+          done < /tmp/tags.txt
