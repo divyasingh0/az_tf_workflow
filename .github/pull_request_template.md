@@ -32,10 +32,3 @@ If yes, explain:
 
 <!-- Required when breaking changes are introduced. -->
 
-### Validation
-
-- [ ] Terraform fmt
-- [ ] Terraform validate
-- [ ] TFLint
-- [ ] Terraform plan validated
-- [ ] Tests completed
