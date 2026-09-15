@@ -1,8 +1,8 @@
 # Centralized Release Please
 
-This repository owns Burlington's release automation. Consumer repositories have one small
-`.github/workflows/release.yml` caller and keep their Release Please configuration/state in
-`.release-please-config.json` and, for manifest repositories, `.release-please-manifest.json`.
+This repository owns Burlington's two-stream release automation. The target repository has one
+small `.github/workflows/release.yml` caller and two independent Release Please streams:
+`workflow` and `release`.
 
 The caller must reference an immutable central workflow release, for example:
 
@@ -32,37 +32,22 @@ Release Please determines the semantic version from Conventional Commits:
 | `feat(component): ...` | minor |
 | `feat(component)!: ...` or `BREAKING CHANGE:` | major |
 
-## Single-application repository
+## Repository release streams
 
-Use `release_mode: single`, configure `package_name`, and keep the initial version at `2.0.0`.
-The example produces `edna-v2.0.0`, `edna-v2.1.0`, and so on because the consumer config enables
-`include-component-in-tag` and `tag-separator: "-"`.
-
-## Multi-component repository
-
-Use `release_mode: manifest`. Each package key in `.release-please-config.json` is a component
-directory and has an entry in `.release-please-manifest.json`. The central workflow always enables
-`separate-pull-requests: true`.
-
-For the manifest model, component ownership is path-based: a component change must modify files
-under that component's configured directory. The Conventional Commit scope must use the same
-component name and is used for human review and changelog context:
+The central workflow always uses Release Please manifest mode with exactly two packages:
+`workflow` and `release`. Component ownership is path-based: a component change must modify files
+under its configured directory. The Conventional Commit scope must use the same component name:
 
 ```text
 feat(storage): add lifecycle policy
 ```
 
-With the example layout, this produces `storage-v2.1.0` without changing unrelated component
-versions. Release Please's manifest package selection is based on configured package paths, not
-custom scope-parsing Bash. Therefore, repositories must keep component paths isolated and should
-reject a PR that uses a component scope while changing another component's files through normal
-review or policy checks.
+Release Please's manifest package selection is based on configured package paths, not custom
+scope-parsing Bash. Keep component paths isolated and reject a PR that uses a component scope while
+changing another component's files through normal review or policy checks.
 
-### Two-stream local test fixture
-
-The [`examples/local-two-components/`](./examples/local-two-components/) fixture models one
-repository containing two independent components: `workflow` and `release`. Both start at
-`2.0.0`.
+The [`examples/local-two-components/`](./examples/local-two-components/) fixture matches this
+setup. Both streams start at `2.0.0`.
 
 Expected test results:
 
@@ -72,32 +57,84 @@ Expected test results:
 | `fix(release): correct release metadata` | release only | `release-v2.0.1` |
 | `feat(release)!: change release contract` | release only | `release-v3.0.0` |
 
-## Testing locally
+## Testing the single repository with `workflow` and `release` tags
 
 Release Please creates GitHub PRs, tags, and releases through the GitHub API, so a completely
 offline local run cannot produce the real result. Use a temporary GitHub repository for the
 authoritative test.
 
-1. Copy the contents of `examples/local-two-components/` into a temporary repository.
-2. Change the caller's reusable-workflow reference from `@v1.0.0` to the branch or tag containing
-   your local central-workflow change.
-3. Push the repository to GitHub and enable Actions.
-4. Commit and push:
+1. Create one temporary GitHub repository. Do not create separate repositories for `workflow` and
+   `release`.
+2. Copy the contents of `examples/local-two-components/` into its root. The resulting repository
+   should look like:
+
+   ```text
+   .github/workflows/release.yml
+   .release-please-config.json
+   .release-please-manifest.json
+   workflow/
+   release/
+   ```
+
+3. In `.github/workflows/release.yml`, temporarily change:
+
+   ```yaml
+   uses: divyasingh0/az_tf_workflow/.github/workflows/release-please.yml@v1.0.0
+   ```
+
+   to the central workflow branch or test tag containing your change.
+4. Push the repository to GitHub, enable Actions, and allow the workflow to write contents and
+   pull requests.
+5. Commit and push a change only under `workflow/`:
 
    ```text
    feat(workflow): add reusable validation
    ```
 
-5. Confirm the Release Please PR only targets `workflow`.
-6. Merge that Release PR and confirm `workflow-v2.1.0`.
-7. Commit and push:
+6. Confirm the Release Please PR only targets `workflow`.
+7. Merge that Release PR and confirm:
+
+   ```text
+   workflow-v2.1.0
+   ```
+
+   The `release` version must remain `2.0.0`.
+8. Commit and push a change only under `release/`:
 
    ```text
    fix(release): correct release metadata
    ```
 
-8. Confirm the Release Please PR only targets `release`, then merge it and confirm
-   `release-v2.0.1`.
+9. Confirm the Release Please PR only targets `release`. Merge it and confirm:
+
+   ```text
+   release-v2.0.1
+   ```
+
+   The existing `workflow-v2.1.0` tag must remain unchanged.
+10. Test a breaking release:
+
+   ```text
+   feat(release)!: change release contract
+   ```
+
+   Expected tag:
+
+   ```text
+   release-v3.0.0
+   ```
+
+At the end, the one repository should contain tags similar to:
+
+```text
+workflow-v2.1.0
+release-v2.0.1
+release-v3.0.0
+```
+
+Do not use `workflow-v` and `release-v` as two manually configured tag prefixes. The official
+Release Please implementation uses manifest packages and `include-component-in-tag` to create
+these independent tags.
 
 For a local Actions simulation, install [`act`](https://github.com/nektos/act), provide a
 fine-grained test token with repository contents and pull-request access, and run:
@@ -141,12 +178,11 @@ the job level. It does not request `id-token`, issues, deployments, or package p
 ```text
 actionlint
 yamllint .github/workflows/release-please.yml
-jq empty examples/single-application/.release-please-config.json
-jq empty examples/multi-component/.release-please-config.json
-jq empty examples/multi-component/.release-please-manifest.json
+jq empty examples/local-two-components/.release-please-config.json
+jq empty examples/local-two-components/.release-please-manifest.json
 ```
 
-Exercise both example callers from a test repository with:
+Exercise the two-stream caller from a test repository with:
 
 - a `fix` commit and expected patch release;
 - a `feat` commit and expected minor release;

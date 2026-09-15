@@ -14,7 +14,6 @@ jobs:
   release:
     uses: divyasingh0/az_tf_workflow/.github/workflows/release-please.yml@v1.0.0
     with:
-      release_mode: manifest
       config_file: .release-please-config.json
       manifest_file: .release-please-manifest.json
       target_branch: main
