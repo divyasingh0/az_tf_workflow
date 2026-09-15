@@ -1,34 +1,33 @@
+```markdown
 ## Release Notes
 
-### Summary
+### Overview
 
-<!-- Provide a concise summary of the change. -->
+<!-- Provide a concise description of the change and its purpose. -->
 
-### Changes
+### Implementation
 
-<!-- Describe what changed. -->
+<!-- Describe the key changes implemented. -->
 
 ### Affected Component
 
-<!-- Example: testapp -->
+**Component:** 
 
-testapp
+### Business / Technical Impact
 
-### Impact
+**Impact:** None / Low / Medium / High
 
-- [ ] No impact
-- [ ] Low
-- [ ] Medium
-- [ ] High
+<!-- Briefly explain the impact if applicable. -->
 
 ### Breaking Changes
 
-- [ ] No
-- [ ] Yes
+**Breaking Changes:** No / Yes
 
-If yes, explain:
+<!-- If yes, provide details. -->
 
-### Migration / Upgrade Notes
+### Migration / Upgrade
 
-<!-- Required when breaking changes are introduced. -->
+**Required:** No / Yes
 
+<!-- If required, describe the required migration or upgrade steps. -->
+```
