@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    uses: divyasingh0/az_tf_workflow/.github/workflows/release-please.yml@v1.0.0
+    uses: divyasingh0/az_tf_workflow/.github/workflows/release-please.yml@main
     with:
       config_file: .release-please-config.json
       manifest_file: .release-please-manifest.json
