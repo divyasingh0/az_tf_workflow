@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      tag_prefix:
+        type: string
+        default: "v"
+      scope:
+        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
+        required: false
+        type: string
+        default: ""
+      initial_version:
+        type: string
+        default: "0.1.0"
+      bump_override:
+        type: string
+        default: "auto"
+      dry_run:
+        description: "Compute and log the release without tagging or publishing"
+        type: boolean
+        default: false
+      draft:
+        type: boolean
+        default: false
+      prerelease:
+        type: boolean
+        default: false
+      target_commitish:
+        description: "Branch/SHA the tag should point to (defaults to triggering ref)"
+        type: string
+        default: ""
+    outputs:
+      released_version:
+        value: ${{ jobs.release.outputs.released_version }}
+      released_tag:
+        value: ${{ jobs.release.outputs.released_tag }}
+      bump_type:
+        value: ${{ jobs.version.outputs.bump_type }}
+
+permissions:
+  contents: write
+  pull-requests: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag_prefix }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    uses: ./.github/workflows/version.yml
+    with:
+      tag_prefix: ${{ inputs.tag_prefix }}
+      scope: ${{ inputs.scope }}
+      initial_version: ${{ inputs.initial_version }}
+      bump_override: ${{ inputs.bump_override }}
+
+  release:
+    name: Release
+    needs: version
+    if: needs.version.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      released_version: ${{ steps.tag.outputs.version }}
+      released_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Generate changelog since last tag
+        id: changelog
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          SCOPE: ${{ inputs.scope }}
+        run: |
+          set -euo pipefail
+
+          LAST_TAG=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname | tail -n2 | head -n1 || true)
+          RANGE="HEAD"
+          [[ -n "$LAST_TAG" ]] && RANGE="${LAST_TAG}..HEAD"
+
+          COMMITS=$(git log "$RANGE" --pretty=format:"%s|%h" --no-merges)
+
+          if [[ -n "$SCOPE" ]]; then
+            SCOPE_RE="\\(${SCOPE}\\)"
+          else
+            SCOPE_RE="(\\([^)]*\\))?"
+          fi
+
+          FEATURES=""
+          FIXES=""
+          BREAKING=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            SUBJECT="${line%%|*}"
+            HASH="${line##*|}"
+
+            if [[ -n "$SCOPE" ]] && ! echo "$SUBJECT" | grep -qE "${SCOPE_RE}"; then
+              continue
+            fi
+
+            if echo "$SUBJECT" | grep -qE "^[a-zA-Z]+${SCOPE_RE}!:"; then
+              BREAKING+="* ${SUBJECT} (${HASH})"$'\n'
+            elif echo "$SUBJECT" | grep -qE "^feat${SCOPE_RE}:"; then
+              FEATURES+="* ${SUBJECT} (${HASH})"$'\n'
+            elif echo "$SUBJECT" | grep -qE "^fix${SCOPE_RE}:"; then
+              FIXES+="* ${SUBJECT} (${HASH})"$'\n'
+            else
+              OTHER+="* ${SUBJECT} (${HASH})"$'\n'
+            fi
+          done <<< "$COMMITS"
+
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## What's Changed"
+            echo ""
+            [[ -n "$BREAKING" ]]  && { echo "### ⚠ BREAKING CHANGES"; echo "$BREAKING"; }
+            [[ -n "$FEATURES" ]]  && { echo "### 🚀 Features"; echo "$FEATURES"; }
+            [[ -n "$FIXES" ]]     && { echo "### 🐛 Bug Fixes"; echo "$FIXES"; }
+            [[ -n "$OTHER" ]]     && { echo "### Other Changes"; echo "$OTHER"; }
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          # store the range so the next step doesn't have to recompute it
+          echo "commit_range=$RANGE" >> "$GITHUB_OUTPUT"
+
+      - name: Pull standardized PR Release Notes for commits in range
+        id: pr_notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RANGE: ${{ steps.changelog.outputs.commit_range }}
+        run: |
+          set -euo pipefail
+
+          NOTES_FILE="/tmp/pr-notes.md"
+          echo "" > "$NOTES_FILE"
+
+          for SHA in $(git log "$RANGE" --pretty=%H --no-merges); do
+            PR_BODY=$(gh api "repos/${REPO}/commits/${SHA}/pulls" 2>/dev/null | jq -r '.[0].body // empty')
+            [[ -z "$PR_BODY" ]] && continue
+
+            SECTION=$(echo "$PR_BODY" | awk '/^## Release Notes/{flag=1} flag{print} /^### Validation/{if(flag){print; exit}}')
+            [[ -z "$SECTION" ]] && continue
+
+            {
+              echo "---"
+              echo "$SECTION"
+              echo ""
+            } >> "$NOTES_FILE"
+          done
+
+          {
+            echo "pr_notes<<PR_NOTES_EOF"
+            cat "$NOTES_FILE"
+            echo "PR_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create annotated tag
+        id: tag
+        shell: bash
+        env:
+          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+          NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+          BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run — would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
+            exit 0
+          fi
+
+          git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
+          git push origin "$NEXT_TAG"
+
+      - name: Create GitHub Release
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+          PR_NOTES: ${{ steps.pr_notes.outputs.pr_notes }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          TARGET: ${{ inputs.target_commitish }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "$CHANGELOG"
+            echo ""
+            if [[ -n "$(echo "$PR_NOTES" | tr -d '[:space:]')" ]]; then
+              echo "## Developer Release Notes"
+              echo "$PR_NOTES"
+            fi
+          } > /tmp/final-notes.md
+
+          ARGS=(--title "$TAG" --notes-file /tmp/final-notes.md)
+          [[ "$DRAFT" == "true" ]] && ARGS+=(--draft)
+          [[ "$PRERELEASE" == "true" ]] && ARGS+=(--prerelease)
+          [[ -n "$TARGET" ]] && ARGS+=(--target "$TARGET")
+
+          gh release create "$TAG" "${ARGS[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release Summary"
+            echo "- Scope: \`${{ inputs.scope || 'repo-wide' }}\`"
+            echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
+            echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
+            echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
