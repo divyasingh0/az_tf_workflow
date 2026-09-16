@@ -3,7 +3,6 @@ name: release-version
 # Reusable workflow: computes the next SemVer version from Conventional Commits.
 # Supports monorepo "scoped" components (e.g. compute, network, storage) via
 # the `scope` input, matched against Conventional Commit scopes like fix(compute): ...
-
 on:
   workflow_call:
     inputs:
