@@ -93,7 +93,10 @@ jobs:
           # Build the scope pattern:
           # - if SCOPE is set (e.g. "compute"), only match that exact scope: fix(compute):
           # - if SCOPE is empty, match any scope OR no scope at all (repo-wide mode)
-          if [[ -n "$SCOPE" ]]; then
+          if [[ "$SCOPE" == "workflow" ]]; then
+            # The default workflow stream accepts unscoped commits and workflow-scoped commits.
+            SCOPE_RE="(\\(workflow\\))?"
+          elif [[ -n "$SCOPE" ]]; then
             SCOPE_RE="\\(${SCOPE}\\)"
           else
             SCOPE_RE="(\\([^)]*\\))?"

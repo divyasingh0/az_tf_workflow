@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       stream:
-        description: "Release stream: workflow or release"
+        description: "Override the release stream for a manual run"
         type: choice
         options: [workflow, release]
         default: workflow
@@ -26,14 +26,65 @@ permissions:
   pull-requests: read
 
 jobs:
+  select-stream:
+    name: Select release stream
+    runs-on: ubuntu-latest
+    outputs:
+      tag_prefix: ${{ steps.stream.outputs.tag_prefix }}
+      scope: ${{ steps.stream.outputs.scope }}
+    steps:
+      - name: Select from Conventional Commit scope
+        id: stream
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_STREAM: ${{ inputs.stream }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          DEFAULT_STREAM: workflow
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && -n "$MANUAL_STREAM" ]]; then
+            stream="$MANUAL_STREAM"
+          else
+            pr_title="$(
+              gh api "repos/${REPOSITORY}/commits/${COMMIT_SHA}/pulls" \
+                --jq '.[0].title // empty' 2>/dev/null || true
+            )"
+            release_subject="${pr_title:-$COMMIT_MESSAGE}"
+
+            if [[ "$release_subject" =~ ^[a-zA-Z]+\(release\)(!)?: ]]; then
+              stream="release"
+            else
+              stream="$DEFAULT_STREAM"
+            fi
+          fi
+
+          case "$stream" in
+            workflow)
+              echo "tag_prefix=workflow-v" >> "$GITHUB_OUTPUT"
+              echo "scope=workflow" >> "$GITHUB_OUTPUT"
+              ;;
+            release)
+              echo "tag_prefix=release-v" >> "$GITHUB_OUTPUT"
+              echo "scope=release" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unsupported release stream: $stream"
+              exit 1
+              ;;
+          esac
+
   release:
+    needs: select-stream
     uses: ./.github/workflows/release.yml
     with:
       tag_prefix: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && (inputs.stream == 'release' && 'release-v' || 'workflow-v')
-            || vars.RELEASE_TAG_PREFIX
-            || 'workflow-v' }}
+        ${{ needs.select-stream.outputs.tag_prefix }}
+      scope: ${{ needs.select-stream.outputs.scope }}
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}
