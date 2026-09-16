@@ -2,15 +2,16 @@
 
 ### Summary
 
-<!-- Short business/technical summary of the change -->
+<!-- Required: one or two sentences describing the business or technical outcome. -->
 
 ### Changes
 
-<!-- Describe what changed -->
+<!-- Required: describe the externally relevant changes. Do not paste commit history. -->
 
-### Affected Component
+### Affected Release Stream
 
-<!-- Example: storage, keyvault, vm, edna -->
+- [ ] workflow
+- [ ] release
 
 ### Impact
 
@@ -19,21 +20,25 @@
 - [ ] Medium
 - [ ] High
 
+<!-- Required: briefly explain the selected impact. -->
+
 ### Breaking Changes
 
 - [ ] No
 - [ ] Yes
 
-If yes, explain:
+<!-- If Yes, explain the breaking change and affected consumers. -->
 
 ### Migration / Upgrade Notes
 
-<!-- Required when breaking changes are introduced -->
+<!-- Required for breaking changes; otherwise write "None". -->
 
 ### Validation
 
 - [ ] Terraform fmt
 - [ ] Terraform validate
 - [ ] TFLint
-- [ ] Terraform plan validated
-- [ ] Tests completed
+- [ ] Terraform plan reviewed
+- [ ] Automated tests completed
+
+<!-- Release automation publishes only this Release Notes section. -->
