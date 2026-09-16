@@ -4,7 +4,6 @@ name: Release
 # and publishes only the standardized Release Notes section from the merged PR.
 # Conventional Commit messages still determine whether and how the version changes.
 
-
 on:
   workflow_call:
     inputs:
