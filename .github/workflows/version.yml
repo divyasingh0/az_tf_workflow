@@ -16,6 +16,11 @@ on:
         required: false
         type: string
         default: ""
+      default_scope:
+        description: "Scope name accepted alongside unscoped commits for the default stream"
+        required: false
+        type: string
+        default: ""
       initial_version:
         description: "Baseline version used when no prior tag exists"
         required: false
@@ -69,6 +74,7 @@ jobs:
         env:
           TAG_PREFIX: ${{ inputs.tag_prefix }}
           SCOPE: ${{ inputs.scope }}
+          DEFAULT_SCOPE: ${{ inputs.default_scope }}
           INITIAL_VERSION: ${{ inputs.initial_version }}
           BUMP_OVERRIDE: ${{ inputs.bump_override }}
         run: |
@@ -93,9 +99,15 @@ jobs:
           # Build the scope pattern:
           # - if SCOPE is set (e.g. "compute"), only match that exact scope: fix(compute):
           # - if SCOPE is empty, match any scope OR no scope at all (repo-wide mode)
-          if [[ "$SCOPE" == "workflow" ]]; then
-            # The default workflow stream accepts unscoped commits and workflow-scoped commits.
-            SCOPE_RE="(\\(workflow\\))?"
+          if [[ "$SCOPE" == "__default__" ]]; then
+            # The selected default stream accepts unscoped commits and commits
+            # explicitly scoped to the configured default stream. The caller
+            # uses this sentinel so other component scopes remain isolated.
+            if [[ -n "$DEFAULT_SCOPE" ]]; then
+              SCOPE_RE="(\\(${DEFAULT_SCOPE}\\))?"
+            else
+              SCOPE_RE="(\\([^)]*\\))?"
+            fi
           elif [[ -n "$SCOPE" ]]; then
             SCOPE_RE="\\(${SCOPE}\\)"
           else
@@ -109,7 +121,7 @@ jobs:
             BUMP="$BUMP_OVERRIDE"
             HAS_CHANGES="true"
 
-          elif echo "$COMMITS" | grep -qiE "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:"; then
+          elif echo "$COMMITS" | grep -qiE "^(BREAKING CHANGE|BREAKING-CHANGE):|^[a-zA-Z]+${SCOPE_RE}!:" || echo "$COMMITS" | grep -qiE "^[a-zA-Z]+!${SCOPE_RE}:"; then
             BUMP="major"
             HAS_CHANGES="true"
 

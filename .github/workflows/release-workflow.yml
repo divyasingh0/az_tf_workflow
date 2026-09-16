@@ -17,10 +17,9 @@ on:
         type: boolean
         default: false
       stream:
-        description: "Override the release stream for a manual run"
-        type: choice
-        options: [workflow, release]
-        default: workflow
+        description: "Optional release stream override for a manual run"
+        type: string
+        default: ""
 permissions:
   contents: write
   pull-requests: read
@@ -40,7 +39,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_STREAM: ${{ inputs.stream }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          DEFAULT_STREAM: workflow
+          DEFAULT_STREAM: ${{ vars.RELEASE_DEFAULT_STREAM || 'default' }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
@@ -56,27 +55,28 @@ jobs:
             )"
             release_subject="${pr_title:-$COMMIT_MESSAGE}"
 
-            if [[ "$release_subject" =~ ^[a-zA-Z]+\(release\)(!)?: ]]; then
-              stream="release"
+            if [[ "$release_subject" =~ ^[a-zA-Z]+\(([a-zA-Z0-9._-]+)\)(!)?: ]]; then
+              stream="${BASH_REMATCH[1]}"
+            elif [[ "$release_subject" =~ ^[a-zA-Z]+!\(([a-zA-Z0-9._-]+)\): ]]; then
+              stream="${BASH_REMATCH[1]}"
             else
               stream="$DEFAULT_STREAM"
             fi
           fi
 
-          case "$stream" in
-            workflow)
-              echo "tag_prefix=workflow-v" >> "$GITHUB_OUTPUT"
-              echo "scope=workflow" >> "$GITHUB_OUTPUT"
-              ;;
-            release)
-              echo "tag_prefix=release-v" >> "$GITHUB_OUTPUT"
-              echo "scope=release" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Unsupported release stream: $stream"
-              exit 1
-              ;;
-          esac
+          if [[ ! "$stream" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "::error::Unsupported release stream: $stream"
+            exit 1
+          fi
+
+          echo "tag_prefix=${stream}-v" >> "$GITHUB_OUTPUT"
+          if [[ "$stream" == "$DEFAULT_STREAM" ]]; then
+            # Keep the default stream distinct from an explicitly repo-wide
+            # release, so unrelated scoped commits cannot enter it.
+            echo "scope=__default__" >> "$GITHUB_OUTPUT"
+          else
+            echo "scope=${stream}" >> "$GITHUB_OUTPUT"
+          fi
 
   release:
     needs: select-stream
@@ -85,6 +85,7 @@ jobs:
       tag_prefix: >-
         ${{ needs.select-stream.outputs.tag_prefix }}
       scope: ${{ needs.select-stream.outputs.scope }}
+      default_scope: ${{ vars.RELEASE_DEFAULT_STREAM || 'default' }}
       initial_version: ${{ vars.RELEASE_INITIAL_VERSION || '2.0.0' }}
       bump_override: ${{ inputs.bump_override || 'auto' }}
       dry_run: ${{ inputs.dry_run || false }}
