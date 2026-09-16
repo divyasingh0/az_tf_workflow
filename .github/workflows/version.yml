@@ -12,7 +12,7 @@ on:
         type: string
         default: "v"
       scope:
-        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
+        description: "Conventional commit scope this component reacts to. The internal __default__ value selects unscoped/default-stream commits."
         required: false
         type: string
         default: ""
