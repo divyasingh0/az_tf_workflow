@@ -3,7 +3,7 @@ name: release-trigger
 # it just calls the reusable release.yml with your org's configuration.
 
 on:
-  pull_request:
+  push:
     branches: [main]
   workflow_dispatch:
     inputs:
