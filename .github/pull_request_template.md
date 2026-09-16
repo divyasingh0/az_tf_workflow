@@ -8,11 +8,6 @@
 
 <!-- Required: describe the externally relevant changes. Do not paste commit history. -->
 
-### Affected Release Stream
-
-- [ ] workflow
-- [ ] release
-
 ### Impact
 
 - [ ] No impact
@@ -20,25 +15,13 @@
 - [ ] Medium
 - [ ] High
 
-<!-- Required: briefly explain the selected impact. -->
-
 ### Breaking Changes
 
 - [ ] No
 - [ ] Yes
 
-<!-- If Yes, explain the breaking change and affected consumers. -->
+**Explanation (required when Yes):**
 
-### Migration / Upgrade Notes
+<!-- Explain the breaking change and affected consumers. -->
 
-<!-- Required for breaking changes; otherwise write "None". -->
-
-### Validation
-
-- [ ] Terraform fmt
-- [ ] Terraform validate
-- [ ] TFLint
-- [ ] Terraform plan reviewed
-- [ ] Automated tests completed
-
-<!-- Release automation publishes only this Release Notes section. -->
+<!-- Release automation publishes only this section and adds the approved-by attribution. -->
