@@ -1,0 +1,201 @@
+name: Release
+
+# Reusable workflow: consumes version.yml's output, creates an ANNOTATED git tag,
+# and publishes only the standardized Release Notes section from the merged PR.
+# Conventional Commit messages still determine whether and how the version changes.
+
+
+on:
+  workflow_call:
+    inputs:
+      tag_prefix:
+        type: string
+        default: "v"
+      scope:
+        description: "Conventional commit scope this component reacts to, e.g. 'compute'. Empty = repo-wide, any scope counts."
+        required: false
+        type: string
+        default: ""
+      initial_version:
+        type: string
+        default: "0.1.0"
+      bump_override:
+        type: string
+        default: "auto"
+      dry_run:
+        description: "Compute and log the release without tagging or publishing"
+        type: boolean
+        default: false
+      draft:
+        type: boolean
+        default: false
+      prerelease:
+        type: boolean
+        default: false
+      target_commitish:
+        description: "Branch/SHA the tag should point to (defaults to triggering ref)"
+        type: string
+        default: ""
+    outputs:
+      released_version:
+        value: ${{ jobs.release.outputs.released_version }}
+      released_tag:
+        value: ${{ jobs.release.outputs.released_tag }}
+      bump_type:
+        value: ${{ jobs.version.outputs.bump_type }}
+      current_version:
+        value: ${{ jobs.version.outputs.current_version }}
+
+permissions:
+  contents: write
+  pull-requests: read
+
+# Prevent two releases from racing on the same ref.
+# tag_prefix is included so compute/network/storage runs don't block each other.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag_prefix }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    uses: ./.github/workflows/version.yml
+    with:
+      tag_prefix: ${{ inputs.tag_prefix }}
+      scope: ${{ inputs.scope }}
+      initial_version: ${{ inputs.initial_version }}
+      bump_override: ${{ inputs.bump_override }}
+
+  release:
+    name: Release
+    needs: version
+    if: needs.version.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      released_version: ${{ steps.tag.outputs.version }}
+      released_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for the tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract standardized release notes
+        id: release_notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          pr_number="$(
+            gh api \
+              "repos/${REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq '.[0].number // empty'
+          )"
+
+          if [[ -z "$pr_number" ]]; then
+            echo "::error::No merged pull request was found for ${RELEASE_SHA}."
+            exit 1
+          fi
+
+          pr_body="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}" --jq '.body // empty')"
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+
+          awk '
+            /^## Release Notes[[:space:]]*$/ { found=1; print; next }
+            found && /^## / { exit }
+            found { print }
+          ' <<< "$pr_body" > "$notes_file"
+
+          if [[ ! -s "$notes_file" ]]; then
+            echo "::error::PR #${pr_number} does not contain the required '## Release Notes' section."
+            exit 1
+          fi
+
+          {
+            echo "pr_number=${pr_number}"
+            echo "notes_file=${notes_file}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Get last conventional commit title
+        id: release_title
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.release_notes.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[-1].commit.message | split("\n")[0]' \
+            > "${RUNNER_TEMP}/release-title.txt"
+
+          if [[ ! -s "${RUNNER_TEMP}/release-title.txt" ]]; then
+            echo "::error::No commit title was found for PR #${PR_NUMBER}."
+            exit 1
+          fi
+
+          {
+            echo "title<<TITLE_EOF"
+            cat "${RUNNER_TEMP}/release-title.txt"
+            echo "TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create annotated tag
+        id: tag
+        shell: bash
+        env:
+          NEXT_TAG: ${{ needs.version.outputs.next_tag }}
+          NEXT_VERSION: ${{ needs.version.outputs.next_version }}
+          BUMP_TYPE: ${{ needs.version.outputs.bump_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$NEXT_TAG" >> "$GITHUB_OUTPUT"
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::Dry run — would create tag $NEXT_TAG (bump: $BUMP_TYPE). No tag pushed."
+            exit 0
+          fi
+
+          git tag -a "$NEXT_TAG" -m "Release $NEXT_TAG"
+          git push origin "$NEXT_TAG"
+
+      - name: Create GitHub Release
+        if: inputs.dry_run == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          NOTES_FILE: ${{ steps.release_notes.outputs.notes_file }}
+          PR_TITLE: ${{ steps.release_title.outputs.title }}
+          DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          TARGET: ${{ inputs.target_commitish }}
+        run: |
+          set -euo pipefail
+          ARGS=(--title "$TAG - $PR_TITLE" --notes-file "$NOTES_FILE")
+          [[ "$DRAFT" == "true" ]] && ARGS+=(--draft)
+          [[ "$PRERELEASE" == "true" ]] && ARGS+=(--prerelease)
+          [[ -n "$TARGET" ]] && ARGS+=(--target "$TARGET")
+
+          gh release create "$TAG" "${ARGS[@]}"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Release Summary"
+            echo "- Scope: \`${{ inputs.scope || 'repo-wide' }}\`"
+            echo "- Bump type: \`${{ needs.version.outputs.bump_type }}\`"
+            echo "- Previous version: \`${{ needs.version.outputs.current_version }}\`"
+            echo "- Released tag: \`${{ steps.tag.outputs.tag }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
