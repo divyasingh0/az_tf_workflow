@@ -38,7 +38,16 @@ feat(workflow)!: change the workflow contract
 
 ### Explicit scoped streams
 
-Any valid Conventional Commit scope selects a matching `<scope>-v` stream:
+Unscoped Conventional Commits use the configured default stream:
+
+```text
+feat: add release testing
+fix: correct release testing
+feat!: change the release contract
+```
+
+These produce minor, patch, and major releases respectively. A scoped commit
+selects a matching `<scope>-v` stream:
 
 ```text
 feat(release): add release automation
@@ -69,14 +78,14 @@ version increment is applied.
 
 | Commit message | Version change |
 |---|---|
-| `fix(scope): ...` | Patch |
-| `feat(scope): ...` | Minor |
-| `feat(scope)!: ...` | Major |
+| `fix: ...` or `fix(scope): ...` | Patch |
+| `feat: ...` or `feat(scope): ...` | Minor |
+| `feat!: ...`, `fix!: ...`, or `feat(scope)!: ...` | Major |
 | `feat!(scope): ...` | Major, supported for compatibility |
 | Commit body contains `BREAKING CHANGE:` | Major |
 | `docs: ...`, `test: ...`, `chore: ...` | No release unless manually overridden |
 
-Recommended syntax:
+Recommended scoped syntax:
 
 ```text
 feat(workflow): add reusable validation
@@ -98,10 +107,11 @@ feat!(workflow): breaking change
 
 ## Version examples
 
-Assume the latest tag is `workflow-v3.0.0`.
+Assume `RELEASE_DEFAULT_STREAM=workflow` and the latest tag is
+`workflow-v3.0.0`.
 
 ```text
-feat(workflow): add feature
+feat: add feature
 ```
 
 Creates:
@@ -111,7 +121,7 @@ workflow-v3.1.0
 ```
 
 ```text
-fix(workflow): correct bug
+fix: correct bug
 ```
 
 Creates:
@@ -121,7 +131,7 @@ workflow-v3.0.1
 ```
 
 ```text
-feat(workflow)!: change interface
+feat!: change interface
 ```
 
 Creates:
@@ -130,7 +140,7 @@ Creates:
 workflow-v4.0.0
 ```
 
-The `release` stream is calculated independently:
+An additional stream is calculated independently:
 
 ```text
 fix(release): correct release metadata
